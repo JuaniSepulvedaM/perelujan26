@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -244,6 +245,35 @@
       <h2>Lista de credenciales (<span id="countPeregrinos">0</span>)</h2>
       <p class="muted" id="countResumen"></p>
       <div id="listaPeregrinos"><div class="empty">Todavía no generaste ninguna credencial.</div></div>
+    </div>
+
+    <div class="card">
+      <h2>🔄 Sincronizar con GitHub (compartir la misma base entre todos)</h2>
+      <p class="muted">Guarda la lista de peregrinos en tu repositorio de GitHub para que sea la misma para todos. Cualquiera puede "bajar" la última versión, hacer cambios, y "subirlos" — queda igual para todos los que después vuelvan a bajarla. Necesita conexión a internet (no funciona en las paradas sin señal, pero sí antes de salir o cuando recuperes señal).</p>
+      <label class="field">
+        <span>Repositorio (usuario/repo)</span>
+        <input type="text" id="ghRepo" placeholder="JuaniSepulvedaM/perelujan26" value="JuaniSepulvedaM/perelujan26">
+      </label>
+      <div class="row">
+        <label class="field">
+          <span>Rama</span>
+          <input type="text" id="ghBranch" value="main">
+        </label>
+        <label class="field">
+          <span>Archivo</span>
+          <input type="text" id="ghFile" value="peregrinos.json">
+        </label>
+      </div>
+      <label class="field">
+        <span>Token personal de GitHub (solo hace falta para subir cambios)</span>
+        <input type="password" id="ghToken" placeholder="ghp_xxxxxxxxxxxx">
+      </label>
+      <p class="muted">El token no se guarda en ningún lado ni queda en el código de la app: solo vive en la memoria del navegador mientras esta pestaña esté abierta. <a class="linklike" id="linkComoToken">¿Cómo genero un token?</a></p>
+      <div class="row">
+        <button class="btn" id="btnGhBajar">⬇️ Bajar la última versión</button>
+        <button class="btn primary" id="btnGhSubir">⬆️ Subir cambios</button>
+      </div>
+      <p class="muted" id="ghEstado" style="margin-top:8px;">Todavía no sincronizaste en esta sesión.</p>
     </div>
 
     <div class="card">
@@ -13147,6 +13177,105 @@ $("btnImprimir").addEventListener("click", ()=>{
     grid.appendChild(card);
   });
   window.print();
+});
+
+// -- sincronización con GitHub --
+$("linkComoToken").addEventListener("click", ()=>{
+  alert(
+    "Cómo generar un token de GitHub:\n\n" +
+    "1) Entrá a github.com con tu cuenta.\n" +
+    "2) Andá a Settings → Developer settings → Personal access tokens → Fine-grained tokens.\n" +
+    "3) Creá uno nuevo, elegí SOLO el repositorio de la peregrinación (ej: perelujan26).\n" +
+    "4) En permisos, dale acceso de lectura y escritura a 'Contents'.\n" +
+    "5) Copiá el token generado y pegalo acá. Empieza con 'github_pat_' o 'ghp_'.\n\n" +
+    "Guardalo en un lugar seguro (por ej. tu gestor de contraseñas): GitHub solo lo muestra una vez."
+  );
+});
+
+function utf8ToBase64(str){
+  const bytes = new TextEncoder().encode(str);
+  let binary = "";
+  bytes.forEach(b => binary += String.fromCharCode(b));
+  return btoa(binary);
+}
+function base64ToUtf8(b64){
+  const binary = atob(b64.replace(/\n/g, ""));
+  const bytes = new Uint8Array([...binary].map(c => c.charCodeAt(0)));
+  return new TextDecoder().decode(bytes);
+}
+function ghConfig(){
+  const repo = $("ghRepo").value.trim();
+  const branch = $("ghBranch").value.trim() || "main";
+  const file = $("ghFile").value.trim() || "peregrinos.json";
+  const token = $("ghToken").value.trim();
+  return {repo, branch, file, token};
+}
+
+$("btnGhBajar").addEventListener("click", async ()=>{
+  const {repo, branch, file} = ghConfig();
+  if(!repo){ toast("Completá el repositorio"); return; }
+  if(peregrinos.length>0){
+    const ok = confirm("Esto va a reemplazar la lista que tenés cargada ahora por la versión de GitHub. ¿Continuar?");
+    if(!ok) return;
+  }
+  $("ghEstado").textContent = "Bajando…";
+  try{
+    const url = `https://raw.githubusercontent.com/${repo}/${branch}/${file}?t=${Date.now()}`;
+    const res = await fetch(url);
+    if(!res.ok){ throw new Error("HTTP " + res.status); }
+    const data = await res.json();
+    peregrinos = data.peregrinos || [];
+    renderListaPeregrinos();
+    $("ghEstado").textContent = "Bajada correctamente a las " + fmtTime(Date.now()) + " · " + peregrinos.length + " credenciales.";
+    toast("Lista actualizada desde GitHub");
+  }catch(err){
+    $("ghEstado").textContent = "No se pudo bajar (¿hay conexión? ¿el archivo ya existe en el repo?).";
+    toast("Error al bajar de GitHub");
+  }
+});
+
+$("btnGhSubir").addEventListener("click", async ()=>{
+  const {repo, branch, file, token} = ghConfig();
+  if(!repo){ toast("Completá el repositorio"); return; }
+  if(!token){ toast("Pegá tu token de GitHub para poder subir cambios"); return; }
+  if(peregrinos.length===0){ toast("No hay nada para subir todavía"); return; }
+  $("ghEstado").textContent = "Subiendo…";
+  const apiUrl = `https://api.github.com/repos/${repo}/contents/${file}`;
+  const authHeaders = {
+    "Authorization": "Bearer " + token,
+    "Accept": "application/vnd.github+json"
+  };
+  try{
+    let sha = null;
+    const getRes = await fetch(apiUrl + "?ref=" + encodeURIComponent(branch), {headers: authHeaders});
+    if(getRes.ok){
+      const getData = await getRes.json();
+      sha = getData.sha;
+    } else if(getRes.status !== 404){
+      throw new Error("No se pudo leer el archivo actual (HTTP " + getRes.status + ")");
+    }
+    const contenido = JSON.stringify({tipo:"lista_peregrinos", generado: new Date().toISOString(), peregrinos}, null, 2);
+    const body = {
+      message: "Actualizar lista de peregrinos (" + new Date().toLocaleString('es-AR') + ")",
+      content: utf8ToBase64(contenido),
+      branch: branch
+    };
+    if(sha) body.sha = sha;
+    const putRes = await fetch(apiUrl, {
+      method: "PUT",
+      headers: {...authHeaders, "Content-Type":"application/json"},
+      body: JSON.stringify(body)
+    });
+    if(!putRes.ok){
+      const errData = await putRes.json().catch(()=>({}));
+      throw new Error(errData.message || ("HTTP " + putRes.status));
+    }
+    $("ghEstado").textContent = "Subido correctamente a las " + fmtTime(Date.now()) + " · " + peregrinos.length + " credenciales.";
+    toast("Cambios subidos a GitHub ✔");
+  }catch(err){
+    $("ghEstado").textContent = "Error al subir: " + err.message;
+    toast("Error al subir a GitHub");
+  }
 });
 
 // ================= ESCANEO =================
