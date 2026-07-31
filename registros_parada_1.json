@@ -1,7 +1,7 @@
 {
   "tipo": "registros_parada",
   "parada": 1,
-  "generado": "2026-07-31T00:33:54.625Z",
+  "generado": "2026-07-31T00:33:58.190Z",
   "registros": [
     {
       "peregrinoId": "LUJAN-005",
@@ -12,6 +12,11 @@
       "peregrinoId": "LUJAN-002",
       "parada": 1,
       "ts": 1785458031619
+    },
+    {
+      "peregrinoId": "LUJAN-001",
+      "parada": 1,
+      "ts": 1785458035186
     }
   ]
 }
