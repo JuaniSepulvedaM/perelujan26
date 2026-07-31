@@ -1,0 +1,24 @@
+{
+  "tipo": "mochilas",
+  "generado": "2026-07-31T00:28:56.338Z",
+  "mochilas": [
+    {
+      "numero": "LUJAN-002",
+      "horaGuardada": 1785457727918,
+      "horaRetirada": null,
+      "tieneFoto": false
+    },
+    {
+      "numero": "LUJAN-005",
+      "horaGuardada": 1785457730626,
+      "horaRetirada": null,
+      "tieneFoto": false
+    },
+    {
+      "numero": "LUJAN-082",
+      "horaGuardada": 1785457733334,
+      "horaRetirada": null,
+      "tieneFoto": false
+    }
+  ]
+}
