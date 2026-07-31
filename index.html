@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<title>Camino a Luján</title>
+<meta name="description" content="Control de peregrinos, paradas y mochilas para la Peregrinación a Luján — funciona sin conexión.">
+<meta name="theme-color" content="#f97316">
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./assets/css/styles.css">
+<link rel="stylesheet" href="./assets/css/dark.css">
+</head>
+<body>
+
+<header class="app-header">
+  <div class="brand">
+    <div class="logo">⛪</div>
+    <div>
+      <h1>Camino a Luján</h1>
+      <div class="sub">Funciona sin conexión</div>
+    </div>
+  </div>
+  <div class="header-actions">
+    <span class="sync-pill" id="syncPill"><span class="dot"></span><span class="txt">Sincronizado</span></span>
+    <button class="icon-btn" id="btnTheme" title="Cambiar tema">🌙</button>
+    <button class="icon-btn" id="btnConfig" title="Configuración">⚙️</button>
+  </div>
+</header>
+
+<main>
+  <section class="view" id="view-home"></section>
+  <section class="view" id="view-escaneo"></section>
+  <section class="view" id="view-registro"></section>
+  <section class="view" id="view-mochilas"></section>
+  <section class="view" id="view-estadisticas"></section>
+
+  <section class="view" id="view-config">
+    <button class="btn ghost" id="btnVolverConfig" style="width:auto; padding:8px 14px;">← Volver</button>
+    <h2 style="margin:14px 0 4px;">Configuración</h2>
+    <div id="view-config-content"></div>
+  </section>
+</main>
+
+<nav class="bottom-nav">
+  <button data-view="home"><span class="ic">🏠</span>Inicio</button>
+  <button data-view="escaneo"><span class="ic">📷</span>Escaneo</button>
+  <button data-view="registro"><span class="ic">👥</span>Registro</button>
+  <button data-view="mochilas"><span class="ic">🎒</span>Mochilas</button>
+  <button data-view="estadisticas"><span class="ic">📊</span>Estad.</button>
+</nav>
+
+<div class="toast" id="toast"></div>
+
+<script src="./assets/js/vendor/jsqr.js"></script>
+<script src="./assets/js/vendor/qrcode.js"></script>
+<script src="./assets/js/vendor/xlsx.js"></script>
+<script type="module" src="./assets/js/app.js"></script>
+</body>
+</html>

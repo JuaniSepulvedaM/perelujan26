@@ -1,0 +1,24 @@
+[data-theme="dark"]{
+  --bg:#121317;
+  --surface:#1c1e24;
+  --surface-2:#25272f;
+  --surface-3:#2e313b;
+  --outline:#343743;
+  --primary:#fb923c;
+  --primary-dark:#f97316;
+  --primary-on:#1a1206;
+  --text:#f2f3f5;
+  --text-dim:#9aa0ab;
+  --success:#4ade80;
+  --success-on:#0d1f12;
+  --danger:#f87171;
+  --danger-bg:#3a1c1c;
+  --warn:#fb923c;
+  --elev-1:0 1px 3px rgba(0,0,0,.45);
+  --elev-2:0 8px 24px rgba(0,0,0,.55);
+  color-scheme: dark;
+}
+[data-theme="dark"] .app-header,
+[data-theme="dark"] .bottom-nav{
+  box-shadow:0 1px 0 rgba(255,255,255,.04);
+}
