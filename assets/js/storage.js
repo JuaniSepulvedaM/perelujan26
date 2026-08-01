@@ -49,3 +49,18 @@ export function normalizarNumero(raw){
   return PREFIX + pad3(parseInt(num, 10));
 }
 
+// Identificador único y persistente de este celular/navegador. Cada dispositivo
+// escribe SIEMPRE únicamente en su propio archivo (nunca pisa el de otro), lo que
+// permite que dos celulares en la misma parada (o dos puestos de mochilas) sumen
+// su información sin conflictos, incluso si estuvieron offline en momentos distintos.
+export function getDeviceId(){
+  let id = getSetting('deviceId', null);
+  if(!id){
+    id = (window.crypto && window.crypto.randomUUID)
+      ? window.crypto.randomUUID().replace(/-/g, '').slice(0, 10)
+      : (Date.now().toString(36) + Math.random().toString(36).slice(2)).slice(0, 10);
+    setSetting('deviceId', id);
+  }
+  return id;
+}
+

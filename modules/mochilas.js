@@ -1,29 +1,45 @@
-// Módulo de Mochilas (Entrega 5): guardar (foto opcional + número), buscar
-// (foto + estado + botón grande de entrega), sincronizar con GitHub.
+// Módulo de Mochilas (Entrega 5, con combinación multi-dispositivo).
+//
+// Cada puesto de mochilas escribe SOLO dos archivos propios:
+//   mochilas/{deviceId}.json  → las mochilas que ESE puesto guardó
+//   retiros/{deviceId}.json   → las entregas que ESE puesto marcó (puede ser
+//                               una mochila guardada por otro puesto — por eso
+//                               va separado: "guardar" y "entregar" son eventos
+//                               independientes que cualquier puesto puede generar).
+// La vista combinada se arma sola sumando todos los archivos, y se actualiza
+// sola cada ciertos segundos y apenas vuelve la conexión.
 
 import { $, escapeHtml, fmtTime, toast, resizeImage, downloadJSON, readFileAsJSON } from '../assets/js/utils.js';
-import { state, normalizarNumero } from '../assets/js/storage.js';
+import { state, normalizarNumero, getDeviceId } from '../assets/js/storage.js';
 import { makeScanner } from '../assets/js/camera.js';
-import { ghConfig, ghBajarJSON, ghSubirJSON, ghSubirFoto, ejecutarEnLotes, fetchImageAsDataURL, programarAutoSync, alVolverOnline } from './github.js';
+import {
+  ghConfig, ghBajarJSON, ghSubirJSON, ghSubirFoto, ghListarCarpeta, ejecutarEnLotes,
+  fetchImageAsDataURL, programarAutoSync, alVolverOnline, crearPoller, registrarForzarSync,
+} from './github.js';
 
 let peregrinosMochilas = [];
 let fotoMochilaPendiente = null;
 let mochilaEnVista = null;
 let scannerGuardar = null, scannerBuscar = null;
+let poller = null;
+
+// ledgers propios de este dispositivo
+let misMochilas = [];   // mochilas que guardó este puesto: {numero, foto, horaGuardada}
+let misRetiros = [];    // entregas que marcó este puesto: {numero, horaGuardada, horaRetirada}
+// última copia conocida de lo que subieron los demás puestos
+let peerMochilasCache = [];
+let peerRetirosCache = [];
 
 function claveMochila(m){ return m.numero + '__' + m.horaGuardada; }
 function nombreDeNumero(id){ const p = peregrinosMochilas.find((x) => x.id === id); return p && p.nombre ? p.nombre : null; }
+function deviceId(){ return getDeviceId(); }
 
 export function init(){
   const el = document.getElementById('view-mochilas');
   el.innerHTML = `
     <div class="card">
       <h2>Peregrinos (opcional, para ver nombres)</h2>
-      <p class="muted">Si tenés la lista, vas a ver el nombre del dueño de cada mochila además del número.</p>
-      <button class="btn primary" id="btnGhBajarListaMochilas">⬇️ Bajar desde GitHub</button>
-      <button class="btn ghost" id="btnImportarListaMochilas">📂 ...o importar desde un archivo</button>
-      <input type="file" accept=".json" id="fileImportarListaMochilas" style="display:none;">
-      <p class="muted" id="mochilasListaStatus">Sin lista importada — se va a mostrar solo el número.</p>
+      <p class="muted" id="mochilasListaStatus">Trayendo nombres…</p>
     </div>
 
     <div class="card">
@@ -72,71 +88,112 @@ export function init(){
 
     <div class="card">
       <h2>Mochilas guardadas ahora (<span id="countMochilasActivas">0</span>)</h2>
-      <p class="muted">Tocá una para buscarla.</p>
-      <div id="listaMochilasActivas"><div class="empty"><span class="ic">🎒</span>No hay mochilas guardadas.</div></div>
+      <p class="muted">Se combina solo con lo que guardaron otros puestos. Tocá una para buscarla.</p>
+      <span class="sync-pill" id="syncPillMochilas"><span class="dot"></span><span class="txt">Combinando…</span></span>
+      <div id="listaMochilasActivas" style="margin-top:10px;"><div class="empty"><span class="ic">🎒</span>No hay mochilas guardadas.</div></div>
     </div>
 
     <div class="card">
-      <h2>Datos de mochilas</h2>
-      <button class="btn" id="btnExportarMochilas">💾 Descargar datos (mochilas.json)</button>
-      <button class="btn ghost" id="btnImportarMochilas">📂 Importar datos existentes</button>
-      <input type="file" accept=".json" id="fileImportarMochilas" style="display:none;">
-    </div>
-
-    <div class="card">
-      <h2>🔄 Sincronizar con GitHub</h2>
-      <button class="btn" id="btnGhBajarMochilas">⬇️ Bajar la última versión</button>
-      <button class="btn primary" id="btnGhSubirMochilas">⬆️ Subir cambios</button>
-      <p class="muted" id="ghEstadoMochilas">Todavía no sincronizaste en esta sesión.</p>
+      <button class="btn ghost" id="btnExportarMochilas">💾 Guardar una copia de respaldo en este celular</button>
     </div>
   `;
 
   wireListaPeregrinos();
   wireGuardar();
   wireBuscar();
-  wireDatos();
-  wireGithub();
+  wireExportarBackup();
   renderMochilasActivas();
 
-  alVolverOnline(() => {
-    if(state.mochilas.length > 0) programarAutoSync('mochilas', subirMochilasSilencioso, 1400);
-  });
+  iniciarPolling();
+  alVolverOnline(() => combinarConOtrosPuestos());
+  registrarForzarSync(async () => { await bajarListaPeregrinos(); await combinarConOtrosPuestos(); });
+
+  bajarListaPeregrinos();
 }
 
 export function detenerCamarasMochilas(){
   if(scannerGuardar){ scannerGuardar.stop(); const w = $('camMochilaGuardarWrap'); if(w) w.style.display = 'none'; }
   if(scannerBuscar){ scannerBuscar.stop(); const w = $('camMochilaBuscarWrap'); if(w) w.style.display = 'none'; }
+  if(poller) poller.stop();
 }
 
-function wireListaPeregrinos(){
-  $('btnGhBajarListaMochilas').addEventListener('click', async () => {
-    const { repo, branch, file } = ghConfig();
-    if(!repo){ toast('Repositorio no configurado en ⚙️ Configuración'); return; }
-    $('mochilasListaStatus').textContent = 'Bajando…';
-    try{
-      const data = await ghBajarJSON(repo, branch, file);
-      peregrinosMochilas = (data.peregrinos || []).map((p) => ({ id: p.id, nombre: p.nombre }));
-      $('mochilasListaStatus').textContent = `Lista actualizada a las ${fmtTime(Date.now())}: ${peregrinosMochilas.length} personas.`;
-      renderMochilasActivas();
-      toast('Lista actualizada desde GitHub');
-    }catch(err){
-      $('mochilasListaStatus').textContent = 'No se pudo bajar (¿hay conexión?).';
-      toast('Error al bajar de GitHub');
+function iniciarPolling(){
+  if(poller) poller.stop();
+  poller = crearPoller(combinarConOtrosPuestos, 20000);
+  poller.start();
+}
+
+async function bajarListaPeregrinos(){
+  const { repo, branch, file } = ghConfig();
+  if(!repo){ $('mochilasListaStatus').textContent = 'Falta configurar el repositorio en ⚙️ Configuración.'; return; }
+  try{
+    const data = await ghBajarJSON(repo, branch, file);
+    peregrinosMochilas = (data.peregrinos || []).map((p) => ({ id: p.id, nombre: p.nombre }));
+    $('mochilasListaStatus').textContent = `${peregrinosMochilas.length} personas · actualizado ${fmtTime(Date.now())}`;
+    renderMochilasActivas();
+  }catch(err){
+    $('mochilasListaStatus').textContent = 'Sin conexión todavía — se muestra solo el número hasta que se pueda traer los nombres.';
+  }
+}
+
+// ---------- combinar con otros puestos ----------
+async function combinarConOtrosPuestos(){
+  const { repo, branch, token } = ghConfig();
+  if(!repo) return;
+  $('syncPillMochilas').className = 'sync-pill pending';
+  $('syncPillMochilas').querySelector('.txt').textContent = 'Combinando…';
+  try{
+    const [archivosMochilas, archivosRetiros] = await Promise.all([
+      ghListarCarpeta(repo, branch, 'mochilas', token),
+      ghListarCarpeta(repo, branch, 'retiros', token),
+    ]);
+    const miArchivo = `${deviceId()}.json`;
+    const otrosMochilas = archivosMochilas.filter((a) => a.name !== miArchivo);
+    const otrosRetiros = archivosRetiros.filter((a) => a.name !== miArchivo);
+
+    const todasMochilas = [];
+    for(const a of otrosMochilas){
+      try{ const data = await ghBajarJSON(repo, branch, a.path); (data.mochilas || []).forEach((m) => todasMochilas.push(m)); }
+      catch(e){}
     }
-  });
-  $('btnImportarListaMochilas').addEventListener('click', () => $('fileImportarListaMochilas').click());
-  $('fileImportarListaMochilas').addEventListener('change', async (e) => {
-    const f = e.target.files[0]; if(!f) return;
-    try{
-      const data = await readFileAsJSON(f);
-      peregrinosMochilas = data.peregrinos || [];
-      $('mochilasListaStatus').textContent = `Lista importada: ${peregrinosMochilas.length} personas.`;
-      renderMochilasActivas();
-      toast('Lista importada');
-    }catch(err){ toast('Archivo inválido'); }
-  });
+    const todosRetiros = [];
+    for(const a of otrosRetiros){
+      try{ const data = await ghBajarJSON(repo, branch, a.path); (data.retiros || []).forEach((r) => todosRetiros.push(r)); }
+      catch(e){}
+    }
+    peerMochilasCache = todasMochilas;
+    peerRetirosCache = todosRetiros;
+    recombinar();
+    renderMochilasActivas();
+    if(mochilaEnVista) buscarMochila(mochilaEnVista.numero);
+    $('syncPillMochilas').className = 'sync-pill ok';
+    $('syncPillMochilas').querySelector('.txt').textContent = 'Combinado con ' + otrosMochilas.length + ' puesto(s) más · ' + fmtTime(Date.now());
+  }catch(err){
+    $('syncPillMochilas').className = 'sync-pill offline';
+    $('syncPillMochilas').querySelector('.txt').textContent = 'Sin conexión — se combina solo cuando vuelva';
+  }
 }
 
+function recombinar(){
+  const metaSinFoto = (m) => ({ numero: m.numero, horaGuardada: m.horaGuardada });
+  const base = [...misMochilas, ...peerMochilasCache].map((m) => ({ ...m, horaRetirada: null }));
+  // dedup por clave (numero+horaGuardada), preferimos la copia que tenga foto si hay dos iguales
+  const porClave = new Map();
+  base.forEach((m) => {
+    const k = claveMochila(m);
+    const prev = porClave.get(k);
+    if(!prev || (!prev.foto && m.foto)) porClave.set(k, m);
+  });
+  const retiros = [...misRetiros, ...peerRetirosCache];
+  retiros.forEach((r) => {
+    const k = r.numero + '__' + r.horaGuardada;
+    const m = porClave.get(k);
+    if(m && (!m.horaRetirada || r.horaRetirada > m.horaRetirada)) m.horaRetirada = r.horaRetirada;
+  });
+  state.mochilas = [...porClave.values()];
+}
+
+// ---------- guardar ----------
 function wireGuardar(){
   $('inpFotoMochila').addEventListener('change', async (e) => {
     const f = e.target.files[0]; if(!f) return;
@@ -166,19 +223,20 @@ function wireGuardar(){
       const ok = confirm('Ya hay una mochila guardada para este número desde las ' + fmtTime(activa.horaGuardada) + '. ¿Guardar esta de todas formas como otra mochila más?');
       if(!ok) return;
     }
-    const nuevaMochila = { numero: id, foto: fotoMochilaPendiente, horaGuardada: Date.now(), horaRetirada: null };
-    state.mochilas.push(nuevaMochila);
-    if(nuevaMochila.foto) state.mochilasPendientesSubir.add(claveMochila(nuevaMochila));
+    const nuevaMochila = { numero: id, foto: fotoMochilaPendiente, horaGuardada: Date.now() };
+    misMochilas.push(nuevaMochila);
+    recombinar();
     fotoMochilaPendiente = null;
     $('inpNumeroMochila').value = ''; $('inpFotoMochila').value = '';
     $('fotoMochilaPreviewWrap').style.display = 'none';
     renderMochilasActivas();
     const nombre = nombreDeNumero(id);
     toast(`Mochila guardada: ${id}${nombre ? ' — ' + nombre : ''}${nuevaMochila.foto ? '' : ' (sin foto)'}`);
-    programarAutoSync('mochilas', subirMochilasSilencioso, 3000);
+    programarAutoSync('mochilas_guardar', subirMisMochilas, 3000);
   });
 }
 
+// ---------- buscar / entregar ----------
 function buscarMochila(id){
   const entradas = state.mochilas.filter((m) => m.numero === id).sort((a, b) => b.horaGuardada - a.horaGuardada);
   const activa = entradas.find((m) => !m.horaRetirada);
@@ -189,7 +247,7 @@ function buscarMochila(id){
   if(activa){
     mochilaEnVista = activa;
     if(activa.foto){ $('resMochilaFoto').src = activa.foto; $('resMochilaFoto').style.display = 'block'; }
-    else { $('resMochilaFoto').style.display = 'none'; $('resMochilaIconoGrande').style.display = 'block'; }
+    else { $('resMochilaFoto').style.display = 'none'; $('resMochilaIconoGrande').style.display = 'block'; $('resMochilaIconoGrande').textContent = '🎒'; }
     $('resMochilaEstado').innerHTML = `✅ <b>Sí, la tenemos.</b> Guardada a las ${fmtTime(activa.horaGuardada)}.` + (activa.foto ? '' : ' (sin foto guardada)');
     $('btnMarcarRetirada').style.display = 'inline-flex';
   } else if(entradas.length > 0){
@@ -231,11 +289,13 @@ function wireBuscar(){
   $('inpNumeroBuscarMochila').addEventListener('keydown', (e) => { if(e.key === 'Enter') $('btnBuscarMochila').click(); });
   $('btnMarcarRetirada').addEventListener('click', () => {
     if(!mochilaEnVista) return;
-    mochilaEnVista.horaRetirada = Date.now();
+    const horaRetirada = Date.now();
+    misRetiros.push({ numero: mochilaEnVista.numero, horaGuardada: mochilaEnVista.horaGuardada, horaRetirada });
+    recombinar();
     toast('Marcada como retirada ✔');
     buscarMochila(mochilaEnVista.numero);
     renderMochilasActivas();
-    programarAutoSync('mochilas', subirMochilasSilencioso, 3000);
+    programarAutoSync('mochilas_retiros', subirMisRetiros, 3000);
   });
 }
 
@@ -259,93 +319,35 @@ function renderMochilasActivas(){
   });
 }
 
-function wireDatos(){
-  $('btnExportarMochilas').addEventListener('click', () => {
-    if(state.mochilas.length === 0){ toast('No hay datos de mochilas para exportar'); return; }
-    downloadJSON({ tipo: 'mochilas', generado: new Date().toISOString(), mochilas: state.mochilas }, 'mochilas.json');
-  });
-  $('btnImportarMochilas').addEventListener('click', () => $('fileImportarMochilas').click());
-  $('fileImportarMochilas').addEventListener('change', async (e) => {
-    const f = e.target.files[0]; if(!f) return;
-    try{
-      const data = await readFileAsJSON(f);
-      state.mochilas = data.mochilas || [];
-      renderMochilasActivas();
-      toast(`Importados ${state.mochilas.length} registros de mochilas`);
-    }catch(err){ toast('Archivo inválido'); }
-  });
-}
-
-async function subirMochilas(mostrarToast){
+// ---------- subir (solo mis propios archivos) / backup local ----------
+async function subirMisMochilas(){
   const { repo, branch, token } = ghConfig();
   if(!repo || !token) throw new Error('Falta repositorio o token');
-  if(state.mochilas.length === 0) return;
-  $('ghEstadoMochilas').textContent = 'Subiendo datos…';
-  const metaMochilas = state.mochilas.map((m) => ({ numero: m.numero, horaGuardada: m.horaGuardada, horaRetirada: m.horaRetirada, tieneFoto: !!m.foto }));
-  await ghSubirJSON(repo, branch, 'mochilas.json', token,
-    { tipo: 'mochilas', generado: new Date().toISOString(), mochilas: metaMochilas },
-    'Actualizar datos de mochilas (' + new Date().toLocaleString('es-AR') + ')');
-  const pendientes = [...state.mochilasPendientesSubir].filter((clave) => state.mochilas.some((m) => claveMochila(m) === clave && m.foto));
-  if(pendientes.length === 0){
-    $('ghEstadoMochilas').textContent = 'Subido correctamente a las ' + fmtTime(Date.now()) + ' · ' + state.mochilas.length + ' registros (sin fotos nuevas).';
-    if(mostrarToast) toast('Mochilas subidas a GitHub ✔');
-    return;
-  }
-  const errores = await ejecutarEnLotes(pendientes, async (clave) => {
-    const m = state.mochilas.find((x) => claveMochila(x) === clave);
-    await ghSubirFoto(repo, branch, `mochilas-fotos/${clave}.jpg`, token, m.foto, `Foto de mochila ${m.numero}`);
-    state.mochilasPendientesSubir.delete(clave);
-  }, 4, (completados, total) => { $('ghEstadoMochilas').textContent = `Subiendo fotos… ${completados}/${total}`; });
-  if(errores.length > 0){
-    $('ghEstadoMochilas').textContent = `Subido con errores: ${pendientes.length - errores.length} fotos ok, ${errores.length} fallaron. Se reintentará solo.`;
-    if(mostrarToast) toast('Algunas fotos no se pudieron subir');
-  } else {
-    $('ghEstadoMochilas').textContent = 'Subido correctamente a las ' + fmtTime(Date.now()) + ' · ' + state.mochilas.length + ' registros, ' + pendientes.length + ' fotos nuevas.';
-    if(mostrarToast) toast('Mochilas subidas a GitHub ✔');
-  }
+  if(misMochilas.length === 0) return;
+  await ejecutarEnLotes(misMochilas.filter((m) => m.foto && !m._subida), async (m) => {
+    await ghSubirFoto(repo, branch, `mochilas-fotos/${claveMochila(m)}.jpg`, token, m.foto, `Foto de mochila ${m.numero}`);
+    m._subida = true;
+  }, 4, () => {});
+  const metaMochilas = misMochilas.map((m) => ({ numero: m.numero, horaGuardada: m.horaGuardada, tieneFoto: !!m.foto }));
+  await ghSubirJSON(repo, branch, `mochilas/${deviceId()}.json`, token,
+    { tipo: 'mochilas', dispositivo: deviceId(), generado: new Date().toISOString(), mochilas: metaMochilas },
+    'Actualizar mochilas guardadas por este puesto (' + new Date().toLocaleString('es-AR') + ')');
 }
-async function subirMochilasSilencioso(){ await subirMochilas(false); }
+async function subirMisRetiros(){
+  const { repo, branch, token } = ghConfig();
+  if(!repo || !token) throw new Error('Falta repositorio o token');
+  if(misRetiros.length === 0) return;
+  await ghSubirJSON(repo, branch, `retiros/${deviceId()}.json`, token,
+    { tipo: 'retiros', dispositivo: deviceId(), generado: new Date().toISOString(), retiros: misRetiros },
+    'Actualizar entregas marcadas por este puesto (' + new Date().toLocaleString('es-AR') + ')');
+}
 
-function wireGithub(){
-  $('btnGhBajarMochilas').addEventListener('click', async () => {
-    const { repo, branch } = ghConfig();
-    if(!repo){ toast('Completá el repositorio en Configuración'); return; }
-    if(state.mochilas.length > 0){
-      const ok = confirm('Esto va a reemplazar los datos de mochilas que tenés cargados ahora por la versión de GitHub. ¿Continuar?');
-      if(!ok) return;
-    }
-    $('ghEstadoMochilas').textContent = 'Bajando datos…';
-    try{
-      const data = await ghBajarJSON(repo, branch, 'mochilas.json');
-      state.mochilas = (data.mochilas || []).map((m) => ({ numero: m.numero, horaGuardada: m.horaGuardada, horaRetirada: m.horaRetirada || null, foto: null, _tieneFoto: !!m.tieneFoto }));
-      state.mochilasPendientesSubir.clear();
-      renderMochilasActivas();
-      const conFoto = state.mochilas.filter((m) => m._tieneFoto);
-      if(conFoto.length > 0){
-        const errores = await ejecutarEnLotes(conFoto, async (m) => {
-          const url = `https://raw.githubusercontent.com/${repo}/${branch}/mochilas-fotos/${claveMochila(m)}.jpg`;
-          m.foto = await fetchImageAsDataURL(url);
-        }, 6, (completados, total) => {
-          $('ghEstadoMochilas').textContent = `Bajando fotos… ${completados}/${total}`;
-          if(completados % 10 === 0 || completados === total) renderMochilasActivas();
-        });
-        renderMochilasActivas();
-        $('ghEstadoMochilas').textContent = 'Bajado correctamente a las ' + fmtTime(Date.now()) + ' · ' + state.mochilas.length + ' registros' + (errores.length ? `, ${conFoto.length - errores.length} fotos (${errores.length} fallaron)` : `, ${conFoto.length} fotos`) + '.';
-      } else {
-        $('ghEstadoMochilas').textContent = 'Bajado correctamente a las ' + fmtTime(Date.now()) + ' · ' + state.mochilas.length + ' registros (sin fotos).';
-      }
-      toast('Mochilas actualizadas desde GitHub');
-    }catch(err){
-      $('ghEstadoMochilas').textContent = 'No se pudo bajar (¿hay conexión?).';
-      toast('Error al bajar de GitHub');
-    }
-  });
-  $('btnGhSubirMochilas').addEventListener('click', async () => {
-    const { repo, token } = ghConfig();
-    if(!repo){ toast('Completá el repositorio en Configuración'); return; }
-    if(!token){ toast('Pegá tu token en Configuración'); return; }
-    if(state.mochilas.length === 0){ toast('No hay nada para subir todavía'); return; }
-    try{ await subirMochilas(true); }
-    catch(err){ $('ghEstadoMochilas').textContent = 'Error al subir: ' + err.message; toast('Error al subir a GitHub'); }
+function wireListaPeregrinos(){ /* la carga es automática (bajarListaPeregrinos), no hace falta nada acá */ }
+
+function wireExportarBackup(){
+  $('btnExportarMochilas').addEventListener('click', () => {
+    if(state.mochilas.length === 0){ toast('No hay datos de mochilas para exportar'); return; }
+    downloadJSON({ tipo: 'mochilas', generado: new Date().toISOString(), mochilas: state.mochilas }, 'mochilas_respaldo.json');
+    toast('Respaldo guardado en el celular');
   });
 }

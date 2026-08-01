@@ -1,9 +1,9 @@
 // Módulo de Estadísticas (Entrega 4): embudo por parada, tiempos promedio,
-// tabla de detalle, faltantes, exportar CSV.
+// tabla de detalle, faltantes, exportar CSV. Combina automáticamente los
+// registros de todos los celulares de cada parada (carpetas por dispositivo).
 
-import { $, escapeHtml, fmtTime, fmtDuration, toast, downloadText, readFileAsJSON } from '../assets/js/utils.js';
-import { state } from '../assets/js/storage.js';
-import { ghConfig, ghBajarJSON } from './github.js';
+import { $, escapeHtml, fmtTime, fmtDuration, toast, downloadText } from '../assets/js/utils.js';
+import { ghConfig, ghBajarJSON, ghListarCarpeta } from './github.js';
 
 let statsPeregrinos = [];
 let statsRegistros = [];
@@ -12,23 +12,10 @@ export function init(){
   const el = document.getElementById('view-estadisticas');
   el.innerHTML = `
     <div class="card">
-      <h2>🔄 Traer todo desde GitHub</h2>
-      <p class="muted">Baja la lista de peregrinos y los registros de las 4 paradas que estén subidos. Necesita internet.</p>
-      <button class="btn primary" id="btnGhTraerTodo">⬇️ Traer todo desde GitHub</button>
-      <p class="muted" id="ghEstadoStats">Todavía no sincronizaste en esta sesión.</p>
-    </div>
-
-    <div class="card">
-      <h2>...o usar los datos ya cargados / importar archivos</h2>
-      <p class="muted">Si ya usaste Registro/Escaneo en este mismo celular, podés graficar directamente lo que ya está en memoria.</p>
-      <button class="btn" id="btnUsarDatosLocales">Usar los datos de este celular</button>
-      <div class="divider"></div>
-      <button class="btn ghost" id="btnImportarListaStats">📂 Importar peregrinos.json</button>
-      <input type="file" accept=".json" id="fileImportarListaStats" style="display:none;">
-      <p class="muted" id="statsListaStatus">No importada todavía.</p>
-      <button class="btn ghost" id="btnImportarRegistrosStats">📂 Importar registros_parada_*.json (varios a la vez)</button>
-      <input type="file" accept=".json" id="fileImportarRegistrosStats" multiple style="display:none;">
-      <div id="statsRegistrosStatus" class="muted" style="margin-top:8px;">Ninguno importado todavía.</div>
+      <h2>📊 Estadísticas</h2>
+      <p class="muted">Trae la lista de peregrinos y combina los registros de todos los celulares de las 4 paradas. Necesita internet.</p>
+      <button class="btn primary" id="btnActualizarStats">🔄 Actualizar estadísticas</button>
+      <p class="muted" id="ghEstadoStats">Todavía no se actualizó en esta sesión.</p>
     </div>
 
     <div id="statsResultado" style="display:none;">
@@ -59,73 +46,50 @@ export function init(){
     </div>
   `;
 
-  $('btnGhTraerTodo').addEventListener('click', traerTodoDesdeGithub);
-  $('btnUsarDatosLocales').addEventListener('click', () => {
-    statsPeregrinos = state.peregrinos.filter((p) => p.nombre);
-    statsRegistros = [...state.registros];
-    $('statsListaStatus').textContent = `Usando ${statsPeregrinos.length} peregrinos de este celular.`;
-    $('statsRegistrosStatus').textContent = `Usando ${statsRegistros.length} registros de este celular.`;
-    tryRenderStats();
-  });
-  $('btnImportarListaStats').addEventListener('click', () => $('fileImportarListaStats').click());
-  $('fileImportarListaStats').addEventListener('change', async (e) => {
-    const f = e.target.files[0]; if(!f) return;
-    try{
-      const data = await readFileAsJSON(f);
-      statsPeregrinos = (data.peregrinos || []).filter((p) => p.nombre);
-      $('statsListaStatus').textContent = `Importada: ${statsPeregrinos.length} peregrinos.`;
-      tryRenderStats();
-    }catch(err){ toast('Archivo inválido'); }
-  });
-  $('btnImportarRegistrosStats').addEventListener('click', () => $('fileImportarRegistrosStats').click());
-  $('fileImportarRegistrosStats').addEventListener('change', async (e) => {
-    const files = Array.from(e.target.files);
-    let resumen = [];
-    for(const f of files){
-      try{
-        const data = await readFileAsJSON(f);
-        const regs = data.registros || [];
-        regs.forEach((r) => statsRegistros.push(r));
-        resumen.push(`${f.name}: ${regs.length} registros (Parada ${data.parada})`);
-      }catch(err){ resumen.push(`${f.name}: ERROR, archivo inválido`); }
-    }
-    $('statsRegistrosStatus').innerHTML = resumen.map((r) => `• ${r}`).join('<br>') + `<br><b>Total acumulado: ${statsRegistros.length} registros.</b>`;
-    tryRenderStats();
-  });
+  $('btnActualizarStats').addEventListener('click', actualizarEstadisticas);
 }
 
-async function traerTodoDesdeGithub(){
-  const { repo, branch, file } = ghConfig();
+async function actualizarEstadisticas(){
+  const { repo, branch, file, token } = ghConfig();
   if(!repo){ toast('Repositorio no configurado en ⚙️ Configuración'); return; }
-  $('ghEstadoStats').textContent = 'Bajando…';
-  let resumen = [];
+  $('ghEstadoStats').textContent = 'Trayendo la lista de peregrinos…';
   try{
     const dataPeregrinos = await ghBajarJSON(repo, branch, file);
     statsPeregrinos = (dataPeregrinos.peregrinos || []).filter((p) => p.nombre);
-    $('statsListaStatus').textContent = `Importada: ${statsPeregrinos.length} peregrinos.`;
-    resumen.push(`peregrinos: ${statsPeregrinos.length} personas`);
   }catch(err){
-    $('ghEstadoStats').textContent = 'No se pudo bajar la lista de peregrinos (¿hay conexión?).';
-    toast('Error al bajar de GitHub');
+    $('ghEstadoStats').textContent = 'No se pudo traer la lista de peregrinos (¿hay conexión?).';
+    toast('Error al traer datos de GitHub');
     return;
   }
+
   statsRegistros = [];
+  const resumen = [];
   for(let i = 1; i <= 4; i++){
-    const nombreArchivo = `registros_parada_${i}.json`;
+    $('ghEstadoStats').textContent = `Combinando registros de la parada ${i}…`;
     try{
-      const data = await ghBajarJSON(repo, branch, nombreArchivo);
-      (data.registros || []).forEach((r) => statsRegistros.push(r));
-      resumen.push(`${nombreArchivo}: ${(data.registros || []).length} registros`);
-    }catch(err){ resumen.push(`${nombreArchivo}: no encontrado todavía`); }
+      const archivos = await ghListarCarpeta(repo, branch, `registros/parada_${i}`, token);
+      let count = 0;
+      for(const a of archivos){
+        try{
+          const data = await ghBajarJSON(repo, branch, a.path);
+          (data.registros || []).forEach((r) => { statsRegistros.push(r); count++; });
+        }catch(e){}
+      }
+      resumen.push(`Parada ${i}: ${count} registros de ${archivos.length} celular(es)`);
+    }catch(err){
+      resumen.push(`Parada ${i}: sin datos todavía`);
+    }
   }
-  $('statsRegistrosStatus').innerHTML = resumen.slice(1).map((r) => '• ' + r).join('<br>') + `<br><b>Total acumulado: ${statsRegistros.length} registros.</b>`;
-  $('ghEstadoStats').textContent = 'Traído correctamente a las ' + fmtTime(Date.now()) + '.';
-  toast('Datos actualizados desde GitHub');
-  tryRenderStats();
+  $('ghEstadoStats').innerHTML = resumen.map((r) => '• ' + r).join('<br>') + `<br><b>Actualizado a las ${fmtTime(Date.now())}.</b>`;
+  toast('Estadísticas actualizadas');
+  renderStats();
 }
 
-function tryRenderStats(){
-  if(statsPeregrinos.length === 0 || statsRegistros.length === 0) return;
+function renderStats(){
+  if(statsPeregrinos.length === 0 || statsRegistros.length === 0){
+    $('statsResultado').style.display = 'none';
+    return;
+  }
   $('statsResultado').style.display = 'block';
 
   const byPerson = {};
@@ -139,7 +103,6 @@ function tryRenderStats(){
   const rows = Object.values(byPerson);
   const total = rows.length;
 
-  // embudo con barras
   const funnel = $('funnelBars');
   funnel.innerHTML = [1,2,3,4].map((i) => {
     const pasaron = rows.filter((r) => r.t[i] != null).length;

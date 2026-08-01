@@ -94,3 +94,29 @@ ambos ven los mismos peregrinos sin tener que sincronizar entre pestañas.
   que los celulares descarten la versión vieja cacheada.
 - El token de GitHub vive solo en memoria del navegador (input en
   Configuración) — nunca se guarda en disco ni en el código.
+
+## Sincronización automática y multi-dispositivo (importante)
+
+- **No hay botones de "Bajar"/"Subir" en ninguna pantalla principal.** Todo pasa
+  solo: se trae la información al entrar, se sube apenas hacés un cambio, y se
+  reintenta solo si no había señal. El único control manual es
+  **⚙️ Configuración → 🔄 Forzar sincronización ahora**, pensado solo para
+  destrabar algo puntual, no para el uso normal.
+- **Dos celulares en la misma parada (o dos puestos de mochilas) nunca se pisan.**
+  Cada celular escribe únicamente su propio archivo (identificado con un ID
+  interno que se genera solo la primera vez), dentro de una carpeta compartida
+  por parada (`registros/parada_1/`, `registros/parada_2/`, etc.) o por tipo
+  (`mochilas/`, `retiros/`). La app combina automáticamente todos los archivos
+  de esa carpeta cada ~20 segundos y apenas vuelve la conexión, sumando lo que
+  registró cada celular sin perder nada de ninguno de los dos.
+- Esto significa que si estuvieron offline en momentos distintos, al recuperar
+  señal cada uno sube lo suyo y ambos terminan viendo la información combinada
+  de los dos, sola, sin que nadie tenga que hacer nada.
+- **Excepción, para que quede claro:** la *lista de peregrinos* (nombres/fotos)
+  sigue viviendo en un solo archivo compartido (`peregrinos.json`). Si dos
+  celulares generan credenciales nuevas al mismo tiempo, se suman sin problema
+  (se combinan solas). Pero si dos celulares editan **el mismo** peregrino
+  (mismo número) casi al mismo tiempo, gana la última edición que se subió —
+  no hay una fusión campo por campo para ese caso puntual. En la práctica esto
+  rara vez pasa porque normalmente una sola persona/celular hace el Registro.
+

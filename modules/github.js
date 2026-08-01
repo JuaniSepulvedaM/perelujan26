@@ -17,7 +17,7 @@ export function init(){
 
     <div class="card">
       <h2>🔄 Sincronización con GitHub</h2>
-      <p class="muted">Usá el mismo repositorio en todos los celulares (Registro, las 4 paradas de Escaneo, y Mochilas) para compartir la misma base de datos.</p>
+      <p class="muted">Usá el mismo repositorio en todos los celulares (Registro, las paradas de Escaneo, y Mochilas). La sincronización es siempre automática: no hay que bajar ni subir nada a mano en ningún lado de la app.</p>
       <label class="field">
         <span>Repositorio (usuario/repo)</span>
         <input type="text" id="ghRepo" placeholder="JuaniSepulvedaM/perelujan26" value="JuaniSepulvedaM/perelujan26">
@@ -27,22 +27,21 @@ export function init(){
         <label class="field"><span>Archivo de peregrinos</span><input type="text" id="ghFile" value="peregrinos.json"></label>
       </div>
       <label class="field">
-        <span>Token personal de GitHub (solo hace falta para subir cambios)</span>
+        <span>Token personal de GitHub</span>
         <input type="password" id="ghToken" placeholder="ghp_xxxxxxxxxxxx">
       </label>
-      <p class="muted">El token no se guarda en ningún lado ni queda en el código de la app: solo vive en la memoria del navegador mientras esta pestaña esté abierta. <a href="#" id="linkComoToken" style="color:var(--primary); font-weight:600;">¿Cómo genero un token?</a></p>
+      <p class="muted">Hace falta en <b>todos</b> los celulares (no solo para subir): también se usa para bajar y combinar automáticamente lo que suben los demás. No se guarda en ningún lado ni queda en el código: solo vive en la memoria del navegador mientras esta pestaña esté abierta. <a href="#" id="linkComoToken" style="color:var(--primary); font-weight:600;">¿Cómo genero un token?</a></p>
       <label class="field">
-        <span><input type="checkbox" id="chkAutoSync" checked> Sincronizar automáticamente en segundo plano cuando haya conexión — no hace falta tocar "Subir" cada vez</span>
-      </label>
-      <label class="field">
-        <span><input type="checkbox" id="chkBajarFotos" checked> Incluir fotos al bajar (más lento cuando hay muchas)</span>
+        <span><input type="checkbox" id="chkBajarFotos" checked> Incluir fotos al combinar (más lento cuando hay muchas)</span>
       </label>
       <p class="muted" id="ghEstadoGlobal">Todavía no sincronizaste en esta sesión.</p>
+      <button class="btn ghost" id="btnForzarSync">🔄 Forzar sincronización ahora</button>
+      <p class="muted">Normalmente no hace falta tocar esto — es solo para el caso de que algo parezca trabado.</p>
     </div>
 
     <div class="card">
       <h2>Acerca de</h2>
-      <p class="muted">Camino a Luján — control de peregrinos, paradas y mochilas. Funciona sin conexión; la sincronización con GitHub necesita internet.</p>
+      <p class="muted">Camino a Luján — control de peregrinos, paradas y mochilas. Funciona sin conexión; la sincronización con GitHub necesita internet y sucede sola en segundo plano.</p>
     </div>
   `;
   $('linkComoToken').addEventListener('click', (e) => {
@@ -53,10 +52,16 @@ export function init(){
       '2) Andá a Settings → Developer settings → Personal access tokens → Fine-grained tokens.\n' +
       '3) Creá uno nuevo, elegí SOLO el repositorio de la peregrinación.\n' +
       '4) En permisos, dale acceso de lectura y escritura a "Contents".\n' +
-      '5) Copiá el token generado y pegalo acá. Empieza con "github_pat_" o "ghp_".\n\n' +
+      '5) Copiá el token generado y pegalo acá en cada celular. Empieza con "github_pat_" o "ghp_".\n\n' +
       'Guardalo en un lugar seguro (por ej. tu gestor de contraseñas): GitHub solo lo muestra una vez.\n\n' +
       'IMPORTANTE: nunca lo compartas por chat ni lo escribas en ningún archivo de código — cualquiera con el token puede escribir en tu repositorio.'
     );
+  });
+  $('btnForzarSync').addEventListener('click', async () => {
+    $('ghEstadoGlobal').textContent = 'Forzando sincronización…';
+    await Promise.all(callbacksForzar.map((fn) => fn().catch(() => {})));
+    $('ghEstadoGlobal').textContent = 'Listo, ' + new Date().toLocaleTimeString('es-AR');
+    toast('Sincronización forzada ✔');
   });
 }
 
@@ -128,6 +133,34 @@ export async function ghBajarJSON(repo, branch, file){
   return await res.json();
 }
 
+// lista los archivos dentro de una carpeta del repo (para combinar el archivo de
+// cada dispositivo). Devuelve [] si la carpeta todavía no existe (nadie subió nada ahí).
+export async function ghListarCarpeta(repo, branch, path, token){
+  const apiUrl = `https://api.github.com/repos/${repo}/contents/${path}?ref=${encodeURIComponent(branch)}`;
+  const headers = { 'Accept': 'application/vnd.github+json' };
+  if(token) headers['Authorization'] = 'Bearer ' + token;
+  const res = await fetch(apiUrl, { headers });
+  if(res.status === 404) return [];
+  if(!res.ok) throw new Error('HTTP ' + res.status);
+  const data = await res.json();
+  return Array.isArray(data) ? data.filter((f) => f.name.endsWith('.json')) : [];
+}
+
+// arranca/detiene una tarea periódica en segundo plano (para combinar datos de
+// otros dispositivos cada tanto). Se salta silenciosamente si no hay conexión.
+export function crearPoller(fn, intervalMs){
+  let handle = null;
+  return {
+    start(){
+      if(handle) return;
+      const tick = async () => { if(navigator.onLine){ try{ await fn(); }catch(e){} } };
+      tick();
+      handle = setInterval(tick, intervalMs);
+    },
+    stop(){ clearInterval(handle); handle = null; },
+  };
+}
+
 // sube/actualiza contenido crudo en base64 (sirve para JSON o fotos). Reintenta
 // solo si GitHub avisa que el archivo cambió justo antes (otro dispositivo subiendo
 // al mismo tiempo) — vuelve a traer el sha más nuevo y reintenta.
@@ -166,16 +199,11 @@ export async function ghSubirFoto(repo, branch, rutaFoto, token, dataUrlFoto, me
   return ghSubirContenido(repo, branch, rutaFoto, token, dataURLtoRawBase64(dataUrlFoto), mensaje);
 }
 
-// ---------- auto-sync en segundo plano ----------
+// ---------- auto-sync en segundo plano (siempre activo) ----------
 const autoSyncTimers = {};
 const autoSyncEnCurso = new Set();
 
-export function isAutoSyncEnabled(){
-  return $('chkAutoSync') ? $('chkAutoSync').checked : false;
-}
-
 export function programarAutoSync(key, fn, delay){
-  if(!isAutoSyncEnabled()) return;
   const {repo, token} = ghConfig();
   if(!repo || !token) return;
   clearTimeout(autoSyncTimers[key]);
@@ -191,8 +219,11 @@ export function programarAutoSync(key, fn, delay){
 const reintentosAlVolverOnline = [];
 export function alVolverOnline(fn){ reintentosAlVolverOnline.push(fn); }
 window.addEventListener('online', () => {
-  if(!isAutoSyncEnabled()) return;
   reintentosAlVolverOnline.forEach((fn) => { try{ fn(); }catch(e){} });
 });
+
+// callbacks que corre el botón "Forzar sincronización ahora" de Configuración
+const callbacksForzar = [];
+export function registrarForzarSync(fn){ callbacksForzar.push(fn); }
 
 export { reportarEstadoGlobal };

@@ -1,9 +1,18 @@
-// Módulo de Escaneo (Entrega 3): cámara, confirmación grande, control por parada.
+// Módulo de Escaneo (Entrega 3, con combinación multi-dispositivo).
+//
+// Cada celular escribe SOLO su propio archivo dentro de registros/parada_N/{deviceId}.json
+// — nunca toca el archivo de otro celular, así que dos celulares en la misma parada
+// jamás se pisan. La vista combinada (para "faltan"/"recientes"/estadísticas) se arma
+// sumando el archivo propio con los de los demás celulares de esa misma parada, y se
+// vuelve a combinar sola cada ciertos segundos y apenas vuelve la conexión.
 
 import { $, escapeHtml, fmtTime, toast, downloadJSON, readFileAsJSON } from '../assets/js/utils.js';
-import { state, PREFIX, normalizarNumero } from '../assets/js/storage.js';
+import { state, PREFIX, normalizarNumero, getDeviceId } from '../assets/js/storage.js';
 import { makeScanner } from '../assets/js/camera.js';
-import { ghConfig, ghBajarJSON, ghSubirJSON, ejecutarEnLotes, fetchImageAsDataURL, programarAutoSync, alVolverOnline } from './github.js';
+import {
+  ghConfig, ghBajarJSON, ghSubirJSON, ghListarCarpeta, ejecutarEnLotes,
+  fetchImageAsDataURL, programarAutoSync, alVolverOnline, crearPoller, registrarForzarSync,
+} from './github.js';
 
 let peregrinosEscaneo = null; // null = todavía no se cargó nada
 let scanner = null;
@@ -11,18 +20,23 @@ let pendingScan = null;
 let lastScan = { code: null, ts: 0 };
 const SCAN_COOLDOWN_MS = 4000;
 
+// registros que efectivamente creó/borró ESTE celular en su parada actual
+let misRegistros = [];
+// última copia conocida de los registros de los OTROS celulares en esta misma parada
+let peerRegistrosCache = [];
+let poller = null;
+
 function listaActiva(){ return peregrinosEscaneo || state.peregrinos; }
+function deviceId(){ return getDeviceId(); }
 
 export function init(){
   const el = document.getElementById('view-escaneo');
   el.innerHTML = `
     <div class="card" id="escaneoSinLista">
-      <h2>Traer lista de peregrinos</h2>
-      <p class="muted">Este celular necesita la lista para poder mostrar nombre y foto al escanear.</p>
-      <button class="btn primary" id="btnGhBajarListaEscaneoInicial">⬇️ Bajar desde GitHub</button>
-      <p class="muted" id="ghEstadoEscaneoInicial" style="margin-top:6px;"></p>
+      <h2>Trayendo la lista de peregrinos…</h2>
+      <p class="muted" id="ghEstadoEscaneoInicial">Un momento — se trae sola en cuanto haya conexión.</p>
       <div class="divider"></div>
-      <p class="muted">...o si no usás GitHub:</p>
+      <p class="muted">¿No tenés internet en este momento?</p>
       <button class="btn ghost" id="btnImportarListaEscaneo">📂 Importar peregrinos.json desde un archivo</button>
       <input type="file" accept=".json" id="fileImportarListaEscaneo" style="display:none;">
     </div>
@@ -33,7 +47,7 @@ export function init(){
         <div style="display:grid; grid-template-columns:repeat(4,1fr); gap:8px;">
           ${[1,2,3,4].map(n => `<button class="btn ghost parada-btn" data-p="${n}" style="margin:0;">Parada ${n}</button>`).join('')}
         </div>
-        <p class="muted" id="paradaHint">Elegí la parada una vez y dejá este celular fijo ahí.</p>
+        <p class="muted" id="paradaHint">Elegí la parada una vez y dejá este celular fijo ahí. Si hay más de un celular en la misma parada, no hay problema: se combinan solos.</p>
       </div>
 
       <div id="escaneoActivo" style="display:none;">
@@ -53,7 +67,8 @@ export function init(){
             <div class="stat-box"><div class="v" id="statPasaron">0</div><div class="l">pasaron</div></div>
             <div class="stat-box"><div class="v" id="statFaltan">0</div><div class="l">faltan</div></div>
           </div>
-          <a href="#" id="toggleFaltan" style="color:var(--primary); font-weight:600;">Ver quiénes faltan ▾</a>
+          <span class="sync-pill" id="syncPillParada" style="margin-bottom:8px;"><span class="dot"></span><span class="txt">Combinando con otros celulares…</span></span>
+          <a href="#" id="toggleFaltan" style="display:block; color:var(--primary); font-weight:600; margin-top:6px;">Ver quiénes faltan ▾</a>
           <div id="listaFaltan" style="display:none; max-height:240px; overflow-y:auto; margin-top:8px;"></div>
         </div>
 
@@ -71,18 +86,12 @@ export function init(){
 
         <div class="card">
           <h2>Últimos registrados acá</h2>
-          <div id="listaRecientes"><div class="empty">Todavía no registraste a nadie en esta parada.</div></div>
+          <p class="muted">Incluye lo registrado por cualquier celular de esta parada.</p>
+          <div id="listaRecientes"><div class="empty">Todavía no hay nadie registrado en esta parada.</div></div>
         </div>
 
         <div class="card">
-          <button class="btn primary" id="btnExportarRegistros">💾 Exportar registros de esta parada</button>
-        </div>
-
-        <div class="card">
-          <h2>🔄 Sincronizar con GitHub</h2>
-          <button class="btn" id="btnGhBajarListaEscaneo">⬇️ Bajar lista de peregrinos actualizada</button>
-          <button class="btn primary" id="btnGhSubirRegistros">⬆️ Subir registros de esta parada</button>
-          <p class="muted" id="ghEstadoEscaneo">Todavía no sincronizaste en esta sesión.</p>
+          <button class="btn ghost" id="btnExportarRegistros">💾 Guardar una copia de respaldo en este celular</button>
         </div>
       </div>
     </div>
@@ -92,12 +101,15 @@ export function init(){
   wireParadas();
   wireCamara();
   wireBusquedaManual();
-  wireExportarYSync();
+  wireExportarBackup();
 
   if(!$('overlayConfirm')) crearOverlayConfirmacion();
 
-  alVolverOnline(() => {
-    if(state.paradaActual != null) programarAutoSync('registros_' + state.paradaActual, () => subirRegistrosSilencioso(state.paradaActual), 1200);
+  intentarCargaAutomatica();
+  alVolverOnline(() => intentarCargaAutomatica());
+  registrarForzarSync(async () => {
+    if(peregrinosEscaneo == null) await intentarCargaAutomatica();
+    if(state.paradaActual != null) await combinarConOtrosCelulares();
   });
 }
 
@@ -124,11 +136,12 @@ function crearOverlayConfirmacion(){
   div.addEventListener('click', (e) => { if(e.target.id === 'overlayConfirm') closeConfirm(); });
 }
 
-// ---------- carga inicial de la lista ----------
-async function bajarListaDesdeGitHub(estadoElId){
+// ---------- carga automática de la lista ----------
+async function intentarCargaAutomatica(){
+  if(peregrinosEscaneo != null) return; // ya la tenemos
   const { repo, branch, file } = ghConfig();
-  if(!repo){ toast('Repositorio no configurado en ⚙️ Configuración'); return; }
-  $(estadoElId).textContent = 'Bajando lista…';
+  if(!repo){ $('ghEstadoEscaneoInicial').textContent = 'Falta configurar el repositorio en ⚙️ Configuración.'; return; }
+  $('ghEstadoEscaneoInicial').textContent = 'Trayendo la lista…';
   try{
     const data = await ghBajarJSON(repo, branch, file);
     const nueva = (data.peregrinos || []).map((p) => ({ id: p.id, nombre: p.nombre, foto: null, _tieneFoto: !!p.tieneFoto }));
@@ -136,18 +149,16 @@ async function bajarListaDesdeGitHub(estadoElId){
     mostrarPantallaConLista();
     renderFaltantes(); renderManual(); renderRecientes();
     const conFoto = nueva.filter((p) => p._tieneFoto);
-    if(conFoto.length > 0){
+    const incluirFotos = document.getElementById('chkBajarFotos')?.checked !== false;
+    if(incluirFotos && conFoto.length > 0){
       await ejecutarEnLotes(conFoto, async (p) => {
         const url = `https://raw.githubusercontent.com/${repo}/${branch}/fotos/${p.id}.jpg`;
         p.foto = await fetchImageAsDataURL(url);
-      }, 6, (completados, total) => { $(estadoElId).textContent = `Bajando fotos… ${completados}/${total}`; });
+      }, 6, () => {});
     }
     renderFaltantes(); renderManual(); renderRecientes();
-    $(estadoElId).textContent = `Lista actualizada a las ${fmtTime(Date.now())} · ${nueva.length} credenciales, ${conFoto.length} fotos.`;
-    toast('Lista actualizada desde GitHub');
   }catch(err){
-    $(estadoElId).textContent = 'No se pudo bajar (¿hay conexión? ¿está el archivo en el repo?).';
-    toast('Error al bajar de GitHub');
+    $('ghEstadoEscaneoInicial').textContent = 'Todavía sin conexión — se va a completar sola apenas haya señal.';
   }
 }
 function mostrarPantallaConLista(){
@@ -155,8 +166,6 @@ function mostrarPantallaConLista(){
   $('escaneoConLista').style.display = 'block';
 }
 function wireCargaInicial(){
-  $('btnGhBajarListaEscaneoInicial').addEventListener('click', () => bajarListaDesdeGitHub('ghEstadoEscaneoInicial'));
-  $('btnGhBajarListaEscaneo').addEventListener('click', () => bajarListaDesdeGitHub('ghEstadoEscaneo'));
   $('btnImportarListaEscaneo').addEventListener('click', () => $('fileImportarListaEscaneo').click());
   $('fileImportarListaEscaneo').addEventListener('change', async (e) => {
     const f = e.target.files[0]; if(!f) return;
@@ -177,12 +186,62 @@ function wireParadas(){
       document.querySelectorAll('.parada-btn').forEach((b) => b.classList.remove('primary'));
       btn.classList.add('primary');
       state.paradaActual = parseInt(btn.dataset.p, 10);
+      misRegistros = []; peerRegistrosCache = [];
       $('paradaTitulo').textContent = 'Parada ' + state.paradaActual;
       $('paradaHint').textContent = 'Este celular está fijado en la Parada ' + state.paradaActual + '.';
       $('escaneoActivo').style.display = 'block';
+      recombinar();
       renderFaltantes(); renderManual(); renderRecientes();
+      iniciarPollingParada();
     });
   });
+}
+
+function iniciarPollingParada(){
+  if(poller) poller.stop();
+  poller = crearPoller(combinarConOtrosCelulares, 20000);
+  poller.start();
+}
+
+async function combinarConOtrosCelulares(){
+  const { repo, branch, token } = ghConfig();
+  if(!repo || state.paradaActual == null) return;
+  const carpeta = `registros/parada_${state.paradaActual}`;
+  $('syncPillParada').className = 'sync-pill pending';
+  $('syncPillParada').querySelector('.txt').textContent = 'Combinando…';
+  try{
+    const archivos = await ghListarCarpeta(repo, branch, carpeta, token);
+    const miArchivo = `${deviceId()}.json`;
+    const otros = archivos.filter((a) => a.name !== miArchivo);
+    const todos = [];
+    for(const a of otros){
+      try{
+        const data = await ghBajarJSON(repo, branch, a.path);
+        (data.registros || []).forEach((r) => todos.push(r));
+      }catch(e){ /* ese archivo puntual falló, seguimos con los demás */ }
+    }
+    peerRegistrosCache = todos;
+    recombinar();
+    renderFaltantes(); renderManual(); renderRecientes();
+    $('syncPillParada').className = 'sync-pill ok';
+    $('syncPillParada').querySelector('.txt').textContent = 'Combinado con ' + otros.length + ' celular(es) más · ' + fmtTime(Date.now());
+  }catch(err){
+    $('syncPillParada').className = 'sync-pill offline';
+    $('syncPillParada').querySelector('.txt').textContent = 'Sin conexión — se combina solo cuando vuelva';
+  }
+}
+
+// combina lo mío + lo de los demás celulares de esta parada en la vista que usa toda la app
+function recombinar(){
+  if(state.paradaActual == null) return;
+  const combinados = [...misRegistros];
+  peerRegistrosCache.forEach((r) => {
+    if(r.parada !== state.paradaActual) return;
+    const existente = combinados.find((x) => x.peregrinoId === r.peregrinoId);
+    if(!existente) combinados.push(r);
+    else if(r.ts > existente.ts) existente.ts = r.ts;
+  });
+  state.registros = state.registros.filter((r) => r.parada !== state.paradaActual).concat(combinados);
 }
 
 // ---------- cámara ----------
@@ -201,6 +260,7 @@ function wireCamara(){
 export function detenerCamaraEscaneo(){
   if(scanner && scanner.isRunning()){ scanner.stop(); const b = $('btnCamara'); if(b) b.textContent = '📷 Iniciar cámara'; }
   if($('overlayConfirm') && $('overlayConfirm').style.display === 'flex') closeConfirm();
+  if(poller) poller.stop();
 }
 
 function onCodeScanned(data, opts){
@@ -243,20 +303,22 @@ function onCodeScanned(data, opts){
 }
 function onConfirmarOk(){
   const now = Date.now();
-  state.registros = state.registros.filter((r) => !(r.peregrinoId === pendingScan && r.parada === state.paradaActual));
-  state.registros.push({ peregrinoId: pendingScan, parada: state.paradaActual, ts: now });
+  misRegistros = misRegistros.filter((r) => r.peregrinoId !== pendingScan);
+  misRegistros.push({ peregrinoId: pendingScan, parada: state.paradaActual, ts: now });
+  recombinar();
   closeConfirm();
   renderFaltantes(); renderManual(); renderRecientes();
   toast('Registrado ✔');
-  programarAutoSync('registros_' + state.paradaActual, () => subirRegistrosSilencioso(state.paradaActual), 3000);
+  programarAutoSync('registros_' + state.paradaActual, subirMisRegistros, 3000);
 }
 function onQuitarRegistro(){
   const nombreQuitado = $('confNombre').textContent;
-  state.registros = state.registros.filter((r) => !(r.peregrinoId === pendingScan && r.parada === state.paradaActual));
+  misRegistros = misRegistros.filter((r) => r.peregrinoId !== pendingScan);
+  recombinar();
   closeConfirm();
   renderFaltantes(); renderManual(); renderRecientes();
   toast(`Registro eliminado: ${nombreQuitado}`);
-  programarAutoSync('registros_' + state.paradaActual, () => subirRegistrosSilencioso(state.paradaActual), 3000);
+  programarAutoSync('registros_' + state.paradaActual, subirMisRegistros, 3000);
 }
 function closeConfirm(){
   if(pendingScan) lastScan = { code: pendingScan, ts: Date.now() };
@@ -311,11 +373,12 @@ function renderManual(){
   wrap.querySelectorAll('button[data-id]').forEach((b) => {
     b.addEventListener('click', () => {
       const now = Date.now();
-      state.registros = state.registros.filter((r) => !(r.peregrinoId === b.dataset.id && r.parada === state.paradaActual));
-      state.registros.push({ peregrinoId: b.dataset.id, parada: state.paradaActual, ts: now });
+      misRegistros = misRegistros.filter((r) => r.peregrinoId !== b.dataset.id);
+      misRegistros.push({ peregrinoId: b.dataset.id, parada: state.paradaActual, ts: now });
+      recombinar();
       renderManual(); renderFaltantes(); renderRecientes();
       toast('Registrado ✔');
-      programarAutoSync('registros_' + state.paradaActual, () => subirRegistrosSilencioso(state.paradaActual), 3000);
+      programarAutoSync('registros_' + state.paradaActual, subirMisRegistros, 3000);
     });
   });
 }
@@ -336,53 +399,41 @@ function renderRecientes(){
   const wrap = $('listaRecientes');
   if(!wrap) return;
   const list = state.registros.filter((r) => r.parada === state.paradaActual).sort((a, b) => b.ts - a.ts).slice(0, 15);
-  if(list.length === 0){ wrap.innerHTML = '<div class="empty">Todavía no registraste a nadie en esta parada.</div>'; return; }
+  if(list.length === 0){ wrap.innerHTML = '<div class="empty">Todavía no hay nadie registrado en esta parada.</div>'; return; }
   wrap.innerHTML = list.map((r) => {
     const p = listaActiva().find((x) => x.id === r.peregrinoId);
+    const esMio = misRegistros.some((m) => m.peregrinoId === r.peregrinoId);
     return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--outline);">
       <div style="width:36px;height:36px;border-radius:50%;overflow:hidden;background:var(--surface-2);display:flex;align-items:center;justify-content:center;">${p && p.foto ? `<img src="${p.foto}" style="width:100%;height:100%;object-fit:cover;">` : '🙂'}</div>
-      <div style="flex:1;"><div style="font-weight:600;">${p ? escapeHtml(p.nombre) : r.peregrinoId}</div><div class="muted" style="font-size:.75rem;">${fmtTime(r.ts)}</div></div>
-      <button class="del-recientes" data-id="${r.peregrinoId}" title="Sacar" style="background:none;border:none;color:var(--danger);font-size:1.1rem;padding:6px;cursor:pointer;">✕</button>
+      <div style="flex:1;"><div style="font-weight:600;">${p ? escapeHtml(p.nombre) : r.peregrinoId}</div><div class="muted" style="font-size:.75rem;">${fmtTime(r.ts)}${esMio ? '' : ' · otro celular'}</div></div>
+      ${esMio ? `<button class="del-recientes" data-id="${r.peregrinoId}" title="Sacar" style="background:none;border:none;color:var(--danger);font-size:1.1rem;padding:6px;cursor:pointer;">✕</button>` : ''}
     </div>`;
   }).join('');
   wrap.querySelectorAll('.del-recientes').forEach((b) => {
     b.addEventListener('click', () => {
-      state.registros = state.registros.filter((r) => !(r.peregrinoId === b.dataset.id && r.parada === state.paradaActual));
+      misRegistros = misRegistros.filter((r) => r.peregrinoId !== b.dataset.id);
+      recombinar();
       renderFaltantes(); renderManual(); renderRecientes();
       toast('Registro eliminado');
-      programarAutoSync('registros_' + state.paradaActual, () => subirRegistrosSilencioso(state.paradaActual), 3000);
+      programarAutoSync('registros_' + state.paradaActual, subirMisRegistros, 3000);
     });
   });
 }
 
-// ---------- exportar / GitHub ----------
-async function subirRegistros(parada, mostrarToast){
+// ---------- subir (solo mi propio archivo) / backup local ----------
+async function subirMisRegistros(){
   const { repo, branch, token } = ghConfig();
   if(!repo || !token) throw new Error('Falta repositorio o token');
-  const registrosDeEsta = state.registros.filter((r) => r.parada === parada);
-  if(registrosDeEsta.length === 0) return;
-  $('ghEstadoEscaneo').textContent = 'Subiendo…';
-  await ghSubirJSON(repo, branch, `registros_parada_${parada}.json`, token,
-    { tipo: 'registros_parada', parada, generado: new Date().toISOString(), registros: registrosDeEsta },
-    `Actualizar registros de la parada ${parada} (` + new Date().toLocaleString('es-AR') + ')');
-  $('ghEstadoEscaneo').textContent = (mostrarToast ? 'Subido correctamente' : '🔄 Auto-sincronizado') + ' a las ' + fmtTime(Date.now()) + ' · ' + registrosDeEsta.length + ' registros.';
-  if(mostrarToast) toast('Registros subidos a GitHub ✔');
+  if(state.paradaActual == null || misRegistros.length === 0) return;
+  await ghSubirJSON(repo, branch, `registros/parada_${state.paradaActual}/${deviceId()}.json`, token,
+    { tipo: 'registros_parada', parada: state.paradaActual, dispositivo: deviceId(), generado: new Date().toISOString(), registros: misRegistros },
+    `Actualizar registros propios de la parada ${state.paradaActual} (` + new Date().toLocaleString('es-AR') + ')');
 }
-async function subirRegistrosSilencioso(parada){ await subirRegistros(parada, false); }
 
-function wireExportarYSync(){
+function wireExportarBackup(){
   $('btnExportarRegistros').addEventListener('click', () => {
     if(state.paradaActual == null){ toast('Elegí una parada primero'); return; }
-    downloadJSON({ tipo: 'registros_parada', parada: state.paradaActual, generado: new Date().toISOString(), registros: state.registros.filter((r) => r.parada === state.paradaActual) }, `registros_parada_${state.paradaActual}.json`);
-    toast('Exportado');
-  });
-  $('btnGhSubirRegistros').addEventListener('click', async () => {
-    if(state.paradaActual == null){ toast('Elegí una parada primero'); return; }
-    const { repo, token } = ghConfig();
-    if(!repo){ toast('Completá el repositorio en Configuración'); return; }
-    if(!token){ toast('Pegá tu token en Configuración'); return; }
-    if(state.registros.filter((r) => r.parada === state.paradaActual).length === 0){ toast('Todavía no hay registros para subir'); return; }
-    try{ await subirRegistros(state.paradaActual, true); }
-    catch(err){ $('ghEstadoEscaneo').textContent = 'Error al subir: ' + err.message; toast('Error al subir a GitHub'); }
+    downloadJSON({ tipo: 'registros_parada', parada: state.paradaActual, generado: new Date().toISOString(), registros: state.registros.filter((r) => r.parada === state.paradaActual) }, `registros_parada_${state.paradaActual}_respaldo.json`);
+    toast('Respaldo guardado en el celular');
   });
 }

@@ -4,7 +4,7 @@
 //
 // IMPORTANTE: subí el número de CACHE_NAME cada vez que cambien estos archivos,
 // para que los celulares descarten la versión vieja en vez de quedarse pegados.
-const CACHE_NAME = 'camino-lujan-v2';
+const CACHE_NAME = 'camino-lujan-v3';
 
 const ARCHIVOS_CASCARON = [
   './',

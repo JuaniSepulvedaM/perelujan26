@@ -6,7 +6,7 @@ import { state, PREFIX, nextId, normalizarNumero } from '../assets/js/storage.js
 import { makeScanner } from '../assets/js/camera.js';
 import {
   ghConfig, ghBajarJSON, ghSubirJSON, ghSubirFoto, ejecutarEnLotes,
-  fetchImageAsDataURL, programarAutoSync, alVolverOnline,
+  fetchImageAsDataURL, programarAutoSync, alVolverOnline, crearPoller, registrarForzarSync,
 } from './github.js';
 
 let fotoPendiente = null;
@@ -89,13 +89,10 @@ export function init(){
     </div>
 
     <div class="card">
-      <h2>🔄 Sincronizar con GitHub</h2>
-      <p class="muted">Usa el repositorio configurado en ⚙️ Configuración.</p>
-      <div class="row">
-        <button class="btn" id="btnGhBajar">⬇️ Bajar la última versión</button>
-        <button class="btn primary" id="btnGhSubir">⬆️ Subir cambios</button>
-      </div>
-      <p class="muted" id="ghEstado" style="margin-top:8px;">Todavía no sincronizaste en esta sesión.</p>
+      <h2>🔄 Sincronización</h2>
+      <p class="muted">Se trae y se sube sola en segundo plano, usando el repositorio de ⚙️ Configuración. Si dos celulares están cargando peregrinos distintos al mismo tiempo, se suman los dos (nunca se pisan) — lo único que no se combina solo son ediciones del mismo peregrino hechas casi al mismo tiempo en dos celulares distintos.</p>
+      <span class="sync-pill" id="syncPillRegistro"><span class="dot"></span><span class="txt">Sincronizando…</span></span>
+      <p class="muted" id="ghEstado" style="margin-top:8px;"></p>
     </div>
 
     <div class="card">
@@ -432,51 +429,86 @@ async function subirPeregrinos(mostrarToast){
 }
 async function subirPeregrinosSilencioso(){ await subirPeregrinos(false); }
 
-function wireGithub(){
-  $('btnGhBajar').addEventListener('click', async () => {
-    const { repo, branch, file } = ghConfig();
-    if(!repo){ toast('Completá el repositorio en Configuración'); return; }
-    if(state.peregrinos.length > 0){
-      const ok = confirm('Esto va a reemplazar la lista que tenés cargada ahora por la versión de GitHub. ¿Continuar?');
-      if(!ok) return;
-    }
-    $('ghEstado').textContent = 'Bajando lista…';
-    try{
-      const data = await ghBajarJSON(repo, branch, file);
-      state.peregrinos = (data.peregrinos || []).map((p) => ({ id: p.id, nombre: p.nombre, foto: null, _tieneFoto: !!p.tieneFoto }));
-      state.fotosPendientesSubir.clear();
+let poller = null;
+
+async function bajarSiEstaVacio(mostrarPill){
+  const { repo, branch, file } = ghConfig();
+  if(!repo) return;
+  if(state.peregrinos.length > 0) return; // ya hay datos locales: no pisamos nada
+  if(mostrarPill) marcarPill('pending', 'Trayendo la lista…');
+  try{
+    const data = await ghBajarJSON(repo, branch, file);
+    state.peregrinos = (data.peregrinos || []).map((p) => ({ id: p.id, nombre: p.nombre, foto: null, _tieneFoto: !!p.tieneFoto }));
+    state.fotosPendientesSubir.clear();
+    renderListaPeregrinos();
+    const conFoto = state.peregrinos.filter((p) => p._tieneFoto);
+    const incluirFotos = document.getElementById('chkBajarFotos')?.checked !== false;
+    if(incluirFotos && conFoto.length > 0){
+      await ejecutarEnLotes(conFoto, async (p) => {
+        const url = `https://raw.githubusercontent.com/${repo}/${branch}/fotos/${p.id}.jpg`;
+        p.foto = await fetchImageAsDataURL(url);
+      }, 6, (completados, total) => {
+        $('ghEstado').textContent = `Trayendo fotos… ${completados}/${total}`;
+        if(completados % 10 === 0 || completados === total) renderListaPeregrinos();
+      });
       renderListaPeregrinos();
-      const conFoto = state.peregrinos.filter((p) => p._tieneFoto);
+    }
+    marcarPill('ok', 'Sincronizado · ' + fmtTime(Date.now()));
+  }catch(err){
+    marcarPill('offline', 'Sin conexión — se completa sola cuando haya señal');
+  }
+}
+
+// combinación segura y automática: agrega credenciales nuevas que hayan subido
+// desde otro celular, sin pisar nunca nada de lo que ya tenés cargado acá.
+async function combinarNuevasCredenciales(){
+  const { repo, branch, token } = ghConfig();
+  if(!repo) return;
+  marcarPill('pending', 'Combinando…');
+  try{
+    const data = await ghBajarJSON(repo, branch, ghConfig().file);
+    const remotas = data.peregrinos || [];
+    const idsLocales = new Set(state.peregrinos.map((p) => p.id));
+    let agregadas = 0;
+    remotas.forEach((p) => {
+      if(!idsLocales.has(p.id)){
+        state.peregrinos.push({ id: p.id, nombre: p.nombre, foto: null, _tieneFoto: !!p.tieneFoto });
+        agregadas++;
+      }
+    });
+    if(agregadas > 0){
+      renderListaPeregrinos();
+      toast(`Se sumaron ${agregadas} credenciales que cargó otro celular`);
       const incluirFotos = document.getElementById('chkBajarFotos')?.checked !== false;
-      if(incluirFotos && conFoto.length > 0){
-        const errores = await ejecutarEnLotes(conFoto, async (p) => {
+      if(incluirFotos){
+        const nuevas = state.peregrinos.filter((p) => p._tieneFoto && !p.foto);
+        await ejecutarEnLotes(nuevas, async (p) => {
           const url = `https://raw.githubusercontent.com/${repo}/${branch}/fotos/${p.id}.jpg`;
           p.foto = await fetchImageAsDataURL(url);
-        }, 6, (completados, total) => {
-          $('ghEstado').textContent = `Bajando fotos… ${completados}/${total}`;
-          if(completados % 10 === 0 || completados === total) renderListaPeregrinos();
-        });
-        renderListaPeregrinos();
-        $('ghEstado').textContent = 'Bajada correctamente a las ' + fmtTime(Date.now()) + ' · ' + state.peregrinos.length + ' credenciales' +
-          (errores.length ? `, ${conFoto.length - errores.length} fotos (${errores.length} fallaron)` : `, ${conFoto.length} fotos`) + '.';
-      } else {
-        $('ghEstado').textContent = 'Bajada correctamente a las ' + fmtTime(Date.now()) + ' · ' + state.peregrinos.length + ' credenciales (sin fotos).';
+        }, 6, () => { renderListaPeregrinos(); });
       }
-      toast('Lista actualizada desde GitHub');
-    }catch(err){
-      $('ghEstado').textContent = 'No se pudo bajar (¿hay conexión? ¿el archivo ya existe en el repo?).';
-      toast('Error al bajar de GitHub');
     }
-  });
+    // subimos lo nuestro también, por si el otro celular no vio todavía lo que agregamos acá
+    if(token && state.peregrinos.length > 0) await subirPeregrinosSilencioso();
+    marcarPill('ok', 'Sincronizado · ' + fmtTime(Date.now()));
+  }catch(err){
+    marcarPill('offline', 'Sin conexión — se combina sola cuando vuelva');
+  }
+}
 
-  $('btnGhSubir').addEventListener('click', async () => {
-    const { repo, token } = ghConfig();
-    if(!repo){ toast('Completá el repositorio en Configuración'); return; }
-    if(!token){ toast('Pegá tu token de GitHub en Configuración'); return; }
-    if(state.peregrinos.length === 0){ toast('No hay nada para subir todavía'); return; }
-    try{ await subirPeregrinos(true); }
-    catch(err){ $('ghEstado').textContent = 'Error al subir: ' + err.message; toast('Error al subir a GitHub'); }
-  });
+function marcarPill(estado, texto){
+  const pill = $('syncPillRegistro');
+  if(!pill) return;
+  pill.className = 'sync-pill ' + estado;
+  pill.querySelector('.txt').textContent = texto;
+}
+
+function wireGithub(){
+  bajarSiEstaVacio(true);
+  poller = crearPoller(combinarNuevasCredenciales, 25000);
+  poller.start();
+  alVolverOnline(() => { bajarSiEstaVacio(true); combinarNuevasCredenciales(); });
+  registrarForzarSync(async () => { await bajarSiEstaVacio(true); await combinarNuevasCredenciales(); });
 }
 
 export { subirPeregrinos, subirPeregrinosSilencioso };
