@@ -8,6 +8,17 @@
 import { $, fmtTime, toast } from '../assets/js/utils.js';
 import { getSetting, setSetting } from '../assets/js/storage.js';
 
+import { $, fmtTime, toast } from '../assets/js/utils.js';
+import { getSetting, setSetting } from '../assets/js/storage.js';
+
+// =====================================================
+// TOKEN POR DEFECTO
+// Reemplazá por el tuyo.
+// Si el usuario escribe otro en Configuración,
+// ese tendrá prioridad.
+// =====================================================
+const DEFAULT_GITHUB_TOKEN = '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';
+
 export function init(){
   const el = document.getElementById('view-config-content');
   el.innerHTML = `
@@ -28,9 +39,13 @@ export function init(){
         <label class="field"><span>Archivo de peregrinos</span><input type="text" id="ghFile" value="peregrinos.json"></label>
       </div>
       <label class="field">
-        <span>Token personal de GitHub</span>
-        <input type="password" id="ghToken" placeholder="ghp_xxxxxxxxxxxx">
-      </label>
+  <span>Token de GitHub (opcional)</span>
+  <input
+    type="password"
+    id="ghToken"
+    placeholder="Vacío = usar el token incorporado"
+    autocomplete="off">
+</label>
       <p class="muted">Hace falta en <b>todos</b> los celulares (no solo para subir): también se usa para bajar y combinar automáticamente lo que suben los demás. Se guarda solo en este celular (para que sobreviva si el navegador se reinicia solo) — nunca en el código ni compartido con nadie más. <a href="#" id="linkComoToken" style="color:var(--primary); font-weight:600;">¿Cómo genero un token?</a></p>
       <label class="field">
         <span><input type="checkbox" id="chkBajarFotos" checked> Incluir fotos al combinar (más lento cuando hay muchas)</span>
@@ -45,11 +60,18 @@ export function init(){
       <p class="muted">Camino a Luján — control de peregrinos, paradas y mochilas. Funciona sin conexión; la sincronización con GitHub necesita internet y sucede sola en segundo plano.</p>
     </div>
   `;
-  ['ghRepo','ghBranch','ghFile','ghToken'].forEach((id) => {
+  ['ghRepo','ghBranch','ghFile'].forEach((id) => {
     const guardado = getSetting(id, null);
     if(guardado) $(id).value = guardado;
     $(id).addEventListener('input', () => setSetting(id, $(id).value.trim()));
-  });
+});
+
+// Token opcional
+$('ghToken').value = getSetting('ghToken', '');
+
+$('ghToken').addEventListener('input', () => {
+    setSetting('ghToken', $('ghToken').value.trim());
+});
   const chkGuardado = getSetting('chkBajarFotos', true);
   $('chkBajarFotos').checked = chkGuardado;
   $('chkBajarFotos').addEventListener('change', () => setSetting('chkBajarFotos', $('chkBajarFotos').checked));
@@ -75,13 +97,21 @@ export function init(){
   });
 }
 
-export function ghConfig(){
-  return {
-    repo: $('ghRepo')?.value.trim() || '',
-    branch: $('ghBranch')?.value.trim() || 'main',
-    file: $('ghFile')?.value.trim() || 'peregrinos.json',
-    token: $('ghToken')?.value.trim() || '',
-  };
+export function verificarConfig(){
+
+    const { repo } = ghConfig();
+
+    if(!repo){
+        return {
+            ok:false,
+            motivo:'Falta el repositorio.'
+        };
+    }
+
+    return {
+        ok:true,
+        motivo:''
+    };
 }
 
 // chequeo explícito para poder avisar CLARAMENTE en pantalla cuando falta algo,
