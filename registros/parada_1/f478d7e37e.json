@@ -1,0 +1,18 @@
+{
+  "tipo": "registros_parada",
+  "parada": 1,
+  "dispositivo": "f478d7e37e",
+  "generado": "2026-08-01T00:34:19.253Z",
+  "registros": [
+    {
+      "peregrinoId": "LUJAN-008",
+      "parada": 1,
+      "ts": 1785544429740
+    },
+    {
+      "peregrinoId": "LUJAN-023",
+      "parada": 1,
+      "ts": 1785544456244
+    }
+  ]
+}
