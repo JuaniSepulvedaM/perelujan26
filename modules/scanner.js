@@ -10,7 +10,7 @@ import { $, escapeHtml, fmtTime, toast, downloadJSON, readFileAsJSON } from '../
 import { state, PREFIX, normalizarNumero, getDeviceId } from '../assets/js/storage.js';
 import { makeScanner } from '../assets/js/camera.js';
 import {
-  ghConfig, ghBajarJSON, ghSubirJSON, ghListarCarpeta, ejecutarEnLotes,
+  ghConfig, verificarConfig, ghBajarJSON, ghSubirJSON, ghListarCarpeta, ejecutarEnLotes,
   fetchImageAsDataURL, programarAutoSync, alVolverOnline, crearPoller, registrarForzarSync,
 } from './github.js';
 
@@ -204,8 +204,14 @@ function iniciarPollingParada(){
 }
 
 async function combinarConOtrosCelulares(){
+  const chequeo = verificarConfig();
+  if(!chequeo.ok){
+    $('syncPillParada').className = 'sync-pill offline';
+    $('syncPillParada').querySelector('.txt').textContent = chequeo.motivo;
+    return;
+  }
   const { repo, branch, token } = ghConfig();
-  if(!repo || state.paradaActual == null) return;
+  if(state.paradaActual == null) return;
   const carpeta = `registros/parada_${state.paradaActual}`;
   $('syncPillParada').className = 'sync-pill pending';
   $('syncPillParada').querySelector('.txt').textContent = 'Combinando…';
@@ -309,7 +315,7 @@ function onConfirmarOk(){
   closeConfirm();
   renderFaltantes(); renderManual(); renderRecientes();
   toast('Registrado ✔');
-  programarAutoSync('registros_' + state.paradaActual, subirMisRegistros, 3000);
+  dispararSubidaMia();
 }
 function onQuitarRegistro(){
   const nombreQuitado = $('confNombre').textContent;
@@ -318,7 +324,7 @@ function onQuitarRegistro(){
   closeConfirm();
   renderFaltantes(); renderManual(); renderRecientes();
   toast(`Registro eliminado: ${nombreQuitado}`);
-  programarAutoSync('registros_' + state.paradaActual, subirMisRegistros, 3000);
+  dispararSubidaMia();
 }
 function closeConfirm(){
   if(pendingScan) lastScan = { code: pendingScan, ts: Date.now() };
@@ -378,7 +384,7 @@ function renderManual(){
       recombinar();
       renderManual(); renderFaltantes(); renderRecientes();
       toast('Registrado ✔');
-      programarAutoSync('registros_' + state.paradaActual, subirMisRegistros, 3000);
+      dispararSubidaMia();
     });
   });
 }
@@ -415,7 +421,7 @@ function renderRecientes(){
       recombinar();
       renderFaltantes(); renderManual(); renderRecientes();
       toast('Registro eliminado');
-      programarAutoSync('registros_' + state.paradaActual, subirMisRegistros, 3000);
+      dispararSubidaMia();
     });
   });
 }
@@ -428,6 +434,16 @@ async function subirMisRegistros(){
   await ghSubirJSON(repo, branch, `registros/parada_${state.paradaActual}/${deviceId()}.json`, token,
     { tipo: 'registros_parada', parada: state.paradaActual, dispositivo: deviceId(), generado: new Date().toISOString(), registros: misRegistros },
     `Actualizar registros propios de la parada ${state.paradaActual} (` + new Date().toLocaleString('es-AR') + ')');
+}
+
+function dispararSubidaMia(){
+  const chequeo = verificarConfig();
+  if(!chequeo.ok){
+    $('syncPillParada').className = 'sync-pill offline';
+    $('syncPillParada').querySelector('.txt').textContent = chequeo.motivo;
+    return;
+  }
+  programarAutoSync('registros_' + state.paradaActual, subirMisRegistros, 3000);
 }
 
 function wireExportarBackup(){

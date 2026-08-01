@@ -13,7 +13,7 @@ import { $, escapeHtml, fmtTime, toast, resizeImage, downloadJSON, readFileAsJSO
 import { state, normalizarNumero, getDeviceId } from '../assets/js/storage.js';
 import { makeScanner } from '../assets/js/camera.js';
 import {
-  ghConfig, ghBajarJSON, ghSubirJSON, ghSubirFoto, ghListarCarpeta, ejecutarEnLotes,
+  ghConfig, verificarConfig, ghBajarJSON, ghSubirJSON, ghSubirFoto, ghListarCarpeta, ejecutarEnLotes,
   fetchImageAsDataURL, programarAutoSync, alVolverOnline, crearPoller, registrarForzarSync,
 } from './github.js';
 
@@ -138,8 +138,13 @@ async function bajarListaPeregrinos(){
 
 // ---------- combinar con otros puestos ----------
 async function combinarConOtrosPuestos(){
+  const chequeo = verificarConfig();
+  if(!chequeo.ok){
+    $('syncPillMochilas').className = 'sync-pill offline';
+    $('syncPillMochilas').querySelector('.txt').textContent = chequeo.motivo;
+    return;
+  }
   const { repo, branch, token } = ghConfig();
-  if(!repo) return;
   $('syncPillMochilas').className = 'sync-pill pending';
   $('syncPillMochilas').querySelector('.txt').textContent = 'Combinando…';
   try{
@@ -232,7 +237,7 @@ function wireGuardar(){
     renderMochilasActivas();
     const nombre = nombreDeNumero(id);
     toast(`Mochila guardada: ${id}${nombre ? ' — ' + nombre : ''}${nuevaMochila.foto ? '' : ' (sin foto)'}`);
-    programarAutoSync('mochilas_guardar', subirMisMochilas, 3000);
+    dispararSubidaGuardar();
   });
 }
 
@@ -295,7 +300,7 @@ function wireBuscar(){
     toast('Marcada como retirada ✔');
     buscarMochila(mochilaEnVista.numero);
     renderMochilasActivas();
-    programarAutoSync('mochilas_retiros', subirMisRetiros, 3000);
+    dispararSubidaRetiro();
   });
 }
 
@@ -343,6 +348,25 @@ async function subirMisRetiros(){
 }
 
 function wireListaPeregrinos(){ /* la carga es automática (bajarListaPeregrinos), no hace falta nada acá */ }
+
+function dispararSubidaGuardar(){
+  const chequeo = verificarConfig();
+  if(!chequeo.ok){
+    $('syncPillMochilas').className = 'sync-pill offline';
+    $('syncPillMochilas').querySelector('.txt').textContent = chequeo.motivo;
+    return;
+  }
+  programarAutoSync('mochilas_guardar', subirMisMochilas, 3000);
+}
+function dispararSubidaRetiro(){
+  const chequeo = verificarConfig();
+  if(!chequeo.ok){
+    $('syncPillMochilas').className = 'sync-pill offline';
+    $('syncPillMochilas').querySelector('.txt').textContent = chequeo.motivo;
+    return;
+  }
+  programarAutoSync('mochilas_retiros', subirMisRetiros, 3000);
+}
 
 function wireExportarBackup(){
   $('btnExportarMochilas').addEventListener('click', () => {

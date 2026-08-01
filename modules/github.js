@@ -6,6 +6,7 @@
 // de 1MB por archivo de la API simple de GitHub.
 
 import { $, fmtTime, toast } from '../assets/js/utils.js';
+import { getSetting, setSetting } from '../assets/js/storage.js';
 
 export function init(){
   const el = document.getElementById('view-config-content');
@@ -30,7 +31,7 @@ export function init(){
         <span>Token personal de GitHub</span>
         <input type="password" id="ghToken" placeholder="ghp_xxxxxxxxxxxx">
       </label>
-      <p class="muted">Hace falta en <b>todos</b> los celulares (no solo para subir): también se usa para bajar y combinar automáticamente lo que suben los demás. No se guarda en ningún lado ni queda en el código: solo vive en la memoria del navegador mientras esta pestaña esté abierta. <a href="#" id="linkComoToken" style="color:var(--primary); font-weight:600;">¿Cómo genero un token?</a></p>
+      <p class="muted">Hace falta en <b>todos</b> los celulares (no solo para subir): también se usa para bajar y combinar automáticamente lo que suben los demás. Se guarda solo en este celular (para que sobreviva si el navegador se reinicia solo) — nunca en el código ni compartido con nadie más. <a href="#" id="linkComoToken" style="color:var(--primary); font-weight:600;">¿Cómo genero un token?</a></p>
       <label class="field">
         <span><input type="checkbox" id="chkBajarFotos" checked> Incluir fotos al combinar (más lento cuando hay muchas)</span>
       </label>
@@ -44,6 +45,15 @@ export function init(){
       <p class="muted">Camino a Luján — control de peregrinos, paradas y mochilas. Funciona sin conexión; la sincronización con GitHub necesita internet y sucede sola en segundo plano.</p>
     </div>
   `;
+  ['ghRepo','ghBranch','ghFile','ghToken'].forEach((id) => {
+    const guardado = getSetting(id, null);
+    if(guardado) $(id).value = guardado;
+    $(id).addEventListener('input', () => setSetting(id, $(id).value.trim()));
+  });
+  const chkGuardado = getSetting('chkBajarFotos', true);
+  $('chkBajarFotos').checked = chkGuardado;
+  $('chkBajarFotos').addEventListener('change', () => setSetting('chkBajarFotos', $('chkBajarFotos').checked));
+
   $('linkComoToken').addEventListener('click', (e) => {
     e.preventDefault();
     alert(
@@ -72,6 +82,15 @@ export function ghConfig(){
     file: $('ghFile')?.value.trim() || 'peregrinos.json',
     token: $('ghToken')?.value.trim() || '',
   };
+}
+
+// chequeo explícito para poder avisar CLARAMENTE en pantalla cuando falta algo,
+// en vez de que la sincronización falle calladamente y nadie entienda por qué.
+export function verificarConfig(){
+  const { repo, token } = ghConfig();
+  if(!repo) return { ok: false, motivo: 'Falta el repositorio — configuralo en ⚙️ Configuración.' };
+  if(!token) return { ok: false, motivo: 'Falta el token de GitHub en ESTE celular — cargalo en ⚙️ Configuración (hace falta en todos los celulares, no solo en uno).' };
+  return { ok: true, motivo: '' };
 }
 
 export function incluirFotosAlBajar(){
@@ -153,7 +172,7 @@ export function crearPoller(fn, intervalMs){
   return {
     start(){
       if(handle) return;
-      const tick = async () => { if(navigator.onLine){ try{ await fn(); }catch(e){} } };
+      const tick = async () => { try{ await fn(); }catch(e){} };
       tick();
       handle = setInterval(tick, intervalMs);
     },
