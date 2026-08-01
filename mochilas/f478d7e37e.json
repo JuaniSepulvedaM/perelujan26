@@ -1,0 +1,12 @@
+{
+  "tipo": "mochilas",
+  "dispositivo": "f478d7e37e",
+  "generado": "2026-08-01T00:35:07.123Z",
+  "mochilas": [
+    {
+      "numero": "LUJAN-002",
+      "horaGuardada": 1785544504120,
+      "tieneFoto": false
+    }
+  ]
+}
