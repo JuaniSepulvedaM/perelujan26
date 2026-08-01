@@ -455,7 +455,7 @@ async function bajarSiEstaVacio(mostrarPill){
     }
     marcarPill('ok', 'Sincronizado · ' + fmtTime(Date.now()));
   }catch(err){
-    marcarPill('offline', 'Sin conexión — se completa sola cuando haya señal');
+    marcarPill('offline', 'No se pudo traer la lista: ' + (err && err.message ? err.message : 'error desconocido'));
   }
 }
 
@@ -492,7 +492,7 @@ async function combinarNuevasCredenciales(){
     if(token && state.peregrinos.length > 0) await subirPeregrinosSilencioso();
     marcarPill('ok', 'Sincronizado · ' + fmtTime(Date.now()));
   }catch(err){
-    marcarPill('offline', 'Sin conexión — se combina sola cuando vuelva');
+    marcarPill('offline', 'No se pudo combinar: ' + (err && err.message ? err.message : 'error desconocido'));
   }
 }
 

@@ -233,7 +233,7 @@ async function combinarConOtrosCelulares(){
     $('syncPillParada').querySelector('.txt').textContent = 'Combinado con ' + otros.length + ' celular(es) más · ' + fmtTime(Date.now());
   }catch(err){
     $('syncPillParada').className = 'sync-pill offline';
-    $('syncPillParada').querySelector('.txt').textContent = 'Sin conexión — se combina solo cuando vuelva';
+    $('syncPillParada').querySelector('.txt').textContent = 'No se pudo combinar: ' + (err && err.message ? err.message : 'error desconocido');
   }
 }
 

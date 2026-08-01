@@ -2,9 +2,16 @@
 // funcione incluso si el celular se queda sin señal DESPUÉS de haberla abierto
 // una vez con conexión. Nunca cachea llamadas a GitHub (esas siempre van a la red).
 //
+// Estrategia: RED PRIMERO, caché como respaldo. Así, cuando el celular tiene
+// conexión, siempre usa la versión más nueva que hayas subido — el caché solo
+// entra en juego si en ese momento no hay señal. (La estrategia opuesta,
+// "caché primero", puede dejar celulares pegados en una versión vieja durante
+// días aunque haya conexión, que es justo lo que no queremos mientras se sigue
+// mejorando la app.)
+//
 // IMPORTANTE: subí el número de CACHE_NAME cada vez que cambien estos archivos,
 // para que los celulares descarten la versión vieja en vez de quedarse pegados.
-const CACHE_NAME = 'camino-lujan-v5';
+const CACHE_NAME = 'camino-lujan-v7';
 
 const ARCHIVOS_CASCARON = [
   './',
@@ -55,15 +62,13 @@ self.addEventListener('fetch', (event) => {
   if(event.request.method !== 'GET') return;
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const fetchPromise = fetch(event.request).then((respuestaRed) => {
-        if(respuestaRed && respuestaRed.status === 200){
-          const copia = respuestaRed.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copia));
-        }
-        return respuestaRed;
-      }).catch(() => cached); // sin conexión: usamos lo cacheado si existe
-      return cached || fetchPromise;
-    })
+    fetch(event.request).then((respuestaRed) => {
+      if(respuestaRed && respuestaRed.status === 200){
+        const copia = respuestaRed.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copia));
+      }
+      return respuestaRed;
+    }).catch(() => caches.match(event.request)) // sin conexión de verdad: recién ahí usamos lo cacheado
   );
 });
+

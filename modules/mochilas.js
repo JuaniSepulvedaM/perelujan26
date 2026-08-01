@@ -132,7 +132,7 @@ async function bajarListaPeregrinos(){
     $('mochilasListaStatus').textContent = `${peregrinosMochilas.length} personas · actualizado ${fmtTime(Date.now())}`;
     renderMochilasActivas();
   }catch(err){
-    $('mochilasListaStatus').textContent = 'Sin conexión todavía — se muestra solo el número hasta que se pueda traer los nombres.';
+    $('mochilasListaStatus').textContent = 'No se pudo traer la lista: ' + (err && err.message ? err.message : 'error desconocido');
   }
 }
 
@@ -175,7 +175,7 @@ async function combinarConOtrosPuestos(){
     $('syncPillMochilas').querySelector('.txt').textContent = 'Combinado con ' + otrosMochilas.length + ' puesto(s) más · ' + fmtTime(Date.now());
   }catch(err){
     $('syncPillMochilas').className = 'sync-pill offline';
-    $('syncPillMochilas').querySelector('.txt').textContent = 'Sin conexión — se combina solo cuando vuelva';
+    $('syncPillMochilas').querySelector('.txt').textContent = 'No se pudo combinar: ' + (err && err.message ? err.message : 'error desconocido');
   }
 }
 
