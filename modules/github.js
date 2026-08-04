@@ -8,16 +8,9 @@
 import { $, fmtTime, toast } from '../assets/js/utils.js';
 import { getSetting, setSetting } from '../assets/js/storage.js';
 
-import { $, fmtTime, toast } from '../assets/js/utils.js';
-import { getSetting, setSetting } from '../assets/js/storage.js';
-
-// =====================================================
-// TOKEN POR DEFECTO
-// Reemplazá por el tuyo.
-// Si el usuario escribe otro en Configuración,
-// ese tendrá prioridad.
-// =====================================================
-const DEFAULT_GITHUB_TOKEN = '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';
+// El token de GitHub NUNCA se guarda en el código: vive solo en el campo
+// de Configuración de cada celular (localStorage vía getSetting/setSetting).
+// Ver ghConfig() más abajo.
 
 export function init(){
   const el = document.getElementById('view-config-content');
@@ -97,21 +90,16 @@ $('ghToken').addEventListener('input', () => {
   });
 }
 
-export function verificarConfig(){
-
-    const { repo } = ghConfig();
-
-    if(!repo){
-        return {
-            ok:false,
-            motivo:'Falta el repositorio.'
-        };
-    }
-
-    return {
-        ok:true,
-        motivo:''
-    };
+// Lee la configuración de sincronización guardada en este celular
+// (repositorio, rama, archivo de peregrinos y token). Faltaba esta función:
+// todos los módulos la importaban pero nunca estaba definida acá.
+export function ghConfig(){
+  return {
+    repo: getSetting('ghRepo', 'JuaniSepulvedaM/perelujan26'),
+    branch: getSetting('ghBranch', 'main'),
+    file: getSetting('ghFile', 'peregrinos.json'),
+    token: getSetting('ghToken', ''),
+  };
 }
 
 // chequeo explícito para poder avisar CLARAMENTE en pantalla cuando falta algo,
