@@ -11,7 +11,7 @@
 //
 // IMPORTANTE: subí el número de CACHE_NAME cada vez que cambien estos archivos,
 // para que los celulares descarten la versión vieja en vez de quedarse pegados.
-const CACHE_NAME = 'camino-lujan-v7';
+const CACHE_NAME = 'camino-lujan-v8';
 
 const ARCHIVOS_CASCARON = [
   './',
@@ -71,4 +71,3 @@ self.addEventListener('fetch', (event) => {
     }).catch(() => caches.match(event.request)) // sin conexión de verdad: recién ahí usamos lo cacheado
   );
 });
-
